@@ -40,6 +40,8 @@ services:
       - key: OWNER_ID
         sync: false
       - key: ENABLE_RUN_PYTHON
-        value: "0"
+        value: "0"        # set to "1" to let Yuki use python as a fallback tool (see README)
+      - key: RUN_PYTHON_OWNER_ONLY
+        value: "0"        # "1" = only OWNER_ID can trigger it
       - key: REPLY_TIMEOUT_SECONDS
         value: "90"

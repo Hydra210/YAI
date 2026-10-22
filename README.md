@@ -2,6 +2,9 @@
 
 A lazy, incompetent Discord bot powered by Groq. Yuki uses AI for everything and is bad at all of it.
 
+He has real tools (server rules, channels, old messages, images, web pages), he adapts to each person who talks to him,
+and he has a sandboxed python fallback for when no tool fits.
+
 ## How to talk to Yuki
 
 - **@mention him** in a server: `@Yuki AI what's the capital of france`
@@ -25,37 +28,58 @@ Render's free plan wipes the filesystem on every deploy and restart, so Yuki wou
 
 If you're running a bot in servers besides your own, Discord's developer policy expects you to tell people what you store and honor deletion requests. `/memory forget` covers the deletion part, you'll still want a short privacy blurb.
 
-## Skills
+## Skills (tools)
 
-Yuki doesn't do the work himself. The bot's Python code (`skills.py`) does the lookups and the file
-work, and Yuki just decides which skill to call and then talks about the result. Skills only get shown to
-the model when the message looks like it needs them (`select_skills`), so normal chat costs exactly what
-it did before.
+Yuki doesn't do the work himself. The bot's Python code (`skills.py`) does the lookups and file work, and Yuki
+only decides which skill to call and then talks about what came back. Ask "what are the rules of the server" and
+the bot finds the rules channel, reads it (embeds included), and hands the text to Yuki.
 
-| Group | Skills | Triggered by words like |
+| Group | Skills | Offered when |
 |---|---|---|
-| discord | `get_user_info`, `get_server_info`, `list_channels`, `get_channel_info`, `read_channel` | who is, profile, joined, server, channel, `#channel` |
-| memory | `search_memory` (filter by person / channel / days back), `recall_user`, `get_context` | said, remember, earlier, last week, what did |
-| media | `image_info`, `convert_image` (gif/png/jpg/webp, animated stays animated), `resize_image` | gif, convert, resize, or just attaching an image |
+| core | `list_skills`, `set_persona`, `clear_persona`, `run_python` | always |
+| discord | `get_server_rules`, `get_pinned_messages`, `find_channel`, `list_roles`, `get_user_info`, `get_server_info`, `list_channels`, `get_channel_info`, `read_channel` | words like rules, server, channel, roles, who is, pinned, `#channel` |
+| memory | `search_memory`, `recall_user`, `get_context` | said, remember, earlier, last week, what did |
+| media | `image_info`, `convert_image`, `resize_image` | gif, convert, resize, or an attached image |
 | util | `current_time`, `calculate` | time, date, math |
-| owner | `run_python` | run, python, script (only for `OWNER_ID`, only if `ENABLE_RUN_PYTHON=1`) |
+| web | `fetch_url` | a link, "website", "article" |
 
-Images come from the message itself, the message you reply to, or the last few messages in the channel.
-`/yuki` also has an optional `image` field.
+**"Can he do that?"** If Yuki isn't sure, he calls `list_skills`, which shows him everything he has and unlocks all
+the tools for the rest of that reply. If no skill fits and python can't do it offline either, he says he can't.
+He doesn't make things up.
 
-**Privacy:** every skill that reads channels or old messages only looks at channels the *person asking*
-can see. Hidden channels act like they don't exist. This also applies to Yuki's automatic recall, which
-used to search every channel in the server.
+**Privacy:** every skill that reads channels or old messages only looks at channels the *person asking* can see.
+Hidden channels act like they don't exist (a hidden `#staff-rules` is never used for "what are the rules").
 
-**Adding a skill:** write an `async def my_skill(ctx, ...)` in `skills.py`, decorate it with `@skill(...)`,
-and add trigger words to `TRIGGERS` if it needs a new group. That's it.
+**Adding a skill:** write an `async def my_skill(ctx, ...)` in `skills.py`, decorate it with `@skill(...)`, and add
+trigger words to `TRIGGERS` if it needs a new group. Use group `"core"` to make it always available.
 
-**`run_python` is not a real sandbox.** It runs with an empty environment (no tokens), a temp dir, a 20s
-timeout and CPU/memory limits, but it can still read files on the host. That's why it's locked to
-`OWNER_ID` and off by default. Don't enable it on a box that holds secrets you wouldn't hand to the owner.
+### Personas (acting differently for each person)
 
-Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`,
-`REPLY_TIMEOUT_SECONDS` (default 90), `MAX_CONCURRENT_REPLIES` (default 4), `GROQ_TIMEOUT_SECONDS` (default 40).
+Tell Yuki "talk like a pirate", "call me boss", "keep replies short" or "be nicer to me" and he calls `set_persona`.
+It's saved per Discord user and only applied when he's replying to *that* person. Nobody else's persona is ever
+shown to the model. `clear_persona` ("go back to normal") removes it. People can also use `/persona` to see or reset
+theirs, and `/memory forget` deletes it too. Persona text is capped (6 instructions, 240 chars each) and attempts to
+rewrite his rules ("ignore your instructions") are refused.
+
+Personas live in Postgres when `DATABASE_URL` is set (survives Render restarts), otherwise in the SQLite file.
+
+### `run_python` (fallback, not a command runner)
+
+Anyone can trigger it **through Yuki**, but only as a last resort. It's offered when `ENABLE_RUN_PYTHON=1`, and:
+
+- Yuki writes the code himself to get a job done. If the code he wants to run is what the person pasted/typed, it's refused.
+- It runs in `sandbox_runner.py`: empty environment, temp working folder, 20s limit, CPU/memory/file limits, and an
+  audit-hook policy that blocks network access, starting processes, `ctypes`, and reading or writing anything outside
+  its own working folder (so not the bot's source, database, `.env`, or `/etc`). Pillow works.
+- Per person: 5 runs per 10 minutes (owner exempt). At most 2 scripts at once. Output is capped. Every run is logged.
+- Set `RUN_PYTHON_OWNER_ONLY=1` to lock it back to `OWNER_ID`.
+
+**This is still not a real sandbox.** A Python-level policy can be beaten by someone determined. Run the bot in a
+container with nothing valuable in it, and don't put secrets in files the bot user can read.
+
+Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`, `RUN_PYTHON_OWNER_ONLY`,
+`RUN_PYTHON_MEM_MB` (default 600), `DATABASE_URL` (Postgres for personas), `REPLY_TIMEOUT_SECONDS` (default 90),
+`MAX_CONCURRENT_REPLIES` (default 4), `GROQ_TIMEOUT_SECONDS` (default 40).
 
 ## Why Yuki used to stop answering
 
@@ -79,7 +103,8 @@ python bot.py
 | `DISCORD_TOKEN` | yes | Bot token from the Discord developer portal |
 | `GROQ_API_KEY` | yes | API key from console.groq.com |
 | `GROQ_MODEL` | no | Groq model name (default `openai/gpt-oss-120b`) |
-| `DATABASE_PATH` | no | Where the memory database lives (default `yuki.db`) |
+| `DATABASE_PATH` | no | Where the SQLite memory file lives (default `yuki.db`) |
+| `DATABASE_URL` | no | Postgres connection string. Used for personas. (Message memory in `memory.py` is still SQLite.) |
 | `MEMORY_RETENTION_DAYS` | no | How long raw messages are kept (default `90`) |
 | `LEARN_INTERVAL_SECONDS` | no | Min seconds between background learning calls (default `45`) |
 | `LEARN_EVERY_MESSAGES` | no | New messages from a person before Yuki re-learns them (default `20`) |
