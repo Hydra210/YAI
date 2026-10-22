@@ -9,6 +9,22 @@ A lazy, incompetent Discord bot powered by Groq. Yuki uses AI for everything and
 - **DM him** directly. No @ or command needed, he replies to every DM.
 - Or start a server message with `yuki`.
 
+## Memory
+
+Yuki reads every message in every channel he can see, even ones not aimed at him, and keeps it in a SQLite database (`memory.py`).
+
+- **Recall:** when someone talks to him, he searches the server's old messages for relevant ones and sees the last 15 messages in the channel, so he can answer things like "what did @bob say about valorant".
+- **Learning:** in the background he writes short notes per person (interests, running jokes, how they type) and per server (vibe, slang, inside jokes). Those notes shape how he replies, so he picks up each person's slang over time. It runs at most one Groq call every 45 seconds.
+- **Spelling:** his creator's name is forced to "Patrick" in code, so the model can't butcher it.
+- **Privacy:** memory is per server, and DMs are private to each user. Edited messages are updated and deleted messages are removed. `/memory show` lists what he knows about you, `/memory forget` wipes it and stops him remembering you, `/memory resume` turns it back on. Messages older than 90 days are pruned.
+- He never stores sensitive stuff (health, sexuality, religion, politics, money, personal info) in his notes.
+
+### Making memory survive restarts on Render
+
+Render's free plan wipes the filesystem on every deploy and restart, so Yuki would forget everything. To keep memory you need a persistent disk (paid plan): add a disk mounted at `/data` and set `DATABASE_PATH=/data/yuki.db`. There's a commented-out example in `render.yaml`. Locally it just works, the file is `yuki.db` in the project folder.
+
+If you're running a bot in servers besides your own, Discord's developer policy expects you to tell people what you store and honor deletion requests. `/memory forget` covers the deletion part, you'll still want a short privacy blurb.
+
 ## Run locally
 
 ```bash
@@ -24,6 +40,11 @@ python bot.py
 | `DISCORD_TOKEN` | yes | Bot token from the Discord developer portal |
 | `GROQ_API_KEY` | yes | API key from console.groq.com |
 | `GROQ_MODEL` | no | Groq model name (default `openai/gpt-oss-120b`) |
+| `DATABASE_PATH` | no | Where the memory database lives (default `yuki.db`) |
+| `MEMORY_RETENTION_DAYS` | no | How long raw messages are kept (default `90`) |
+| `LEARN_INTERVAL_SECONDS` | no | Min seconds between background learning calls (default `45`) |
+| `LEARN_EVERY_MESSAGES` | no | New messages from a person before Yuki re-learns them (default `20`) |
+| `VIBE_EVERY_MESSAGES` | no | New server messages before Yuki re-learns the server vibe (default `60`) |
 
 ## Discord setup
 

@@ -17,3 +17,11 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
+      # memory: on the free plan the database resets on every deploy.
+      # To keep it, switch to a paid plan, uncomment the disk below and this env var.
+      # - key: DATABASE_PATH
+      #   value: /data/yuki.db
+    # disk:
+    #   name: yuki-memory
+    #   mountPath: /data
+    #   sizeGB: 1
