@@ -32,7 +32,7 @@ RETENTION_DAYS = int(os.getenv("MEMORY_RETENTION_DAYS", "90"))
 LEARN_INTERVAL = int(os.getenv("LEARN_INTERVAL_SECONDS", "45"))
 LEARN_EVERY = int(os.getenv("LEARN_EVERY_MESSAGES", "20"))
 VIBE_EVERY = int(os.getenv("VIBE_EVERY_MESSAGES", "60"))
-RECENT_LIMIT = 15
+RECENT_LIMIT = 25
 MAX_PEOPLE = 5
 MEMORY_CHARS = 3500
 
@@ -47,6 +47,14 @@ Core vibe:
 - Sound like someone who is chatting in a server, not giving a polished answer.
 - Keep it human, messy, and vibey.
 - You can be funny, dry, lazy, goofy, or a little dramatic depending on the convo.
+
+Context rules (important):
+- Always read the recent conversation before answering.
+- If the last message references earlier chat, infer the context from the older messages in the same channel.
+- Do not answer only to the newest sentence without checking what the convo is actually about.
+- Treat earlier messages as the real source of meaning. If something is unclear, use the surrounding chat to reconstruct it.
+- If a user asks "what did we decide", "what was that about", "wait who said this", or references earlier stuff, use the planned context to answer correctly.
+- Do not ignore previous messages just because the newest one is short.
 
 Default voice:
 - Slangy, relaxed, casual, very chatty.
@@ -233,7 +241,7 @@ def gather(scope, channel_key, msg_id, user_id, text, mentioned_ids):
         )
 
     for uid in mentioned_ids[:2]:
-        msgs = [m for m in mem.user_messages(scope, uid, 6) if m["id"] not in recent_ids and h["id"] != msg_id]
+        msgs = [m for m in mem.user_messages(scope, uid, 6) if m["id"] not in recent_ids and m["id"] != msg_id]
         if msgs:
             parts.append(
                 f"what {msgs[0]['author']} said lately:\n"
@@ -256,7 +264,9 @@ async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, menti
         "recent chat in this channel, oldest first:\n"
         + "\n".join(transcript)
         + f"\n\nthe last message is from {author_name} and it's aimed at you. "
-        "reply to it as yuki. only write the reply itself, no name prefix."
+        "Use the earlier chat to understand the context before answering. "
+        "If the last line references something from earlier in the conversation, resolve that context first. "
+        "Do not answer only from the newest sentence. Only write the reply itself, no name prefix."
     )
 
     system = SYSTEM_PROMPT
