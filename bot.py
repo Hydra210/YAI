@@ -230,6 +230,7 @@ groq_clients = [AsyncGroq(api_key=key) for key in GROQ_KEYS]
 groq_index = 0
 groq_lock = asyncio.Lock()
 
+
 def rotate_groq_key():
     global groq_index
     groq_index = (groq_index + 1) % len(groq_clients)
@@ -400,6 +401,7 @@ async def maybe_handle_owner_approval(message: discord.Message):
 
 
 async def handle_owner_self_admin(message: discord.Message):
+    global LEARN_INTERVAL, MODEL
     if not is_owner_user(message.author):
         return False
     text = (message.content or "").strip().lower()
@@ -430,7 +432,6 @@ async def handle_owner_self_admin(message: discord.Message):
         m = re.search(r"(\d+)", text)
         if m:
             value = int(m.group(1))
-            global LEARN_INTERVAL
             LEARN_INTERVAL = value
             await message.reply(f"learn interval set to {value}s")
             return True
@@ -438,7 +439,6 @@ async def handle_owner_self_admin(message: discord.Message):
     if "set model" in text:
         m = re.search(r"([a-z0-9/_\-.]+)", text)
         if m:
-            global MODEL
             MODEL = m.group(1)
             await message.reply(f"model set to {MODEL}")
             return True
