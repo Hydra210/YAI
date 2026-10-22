@@ -1,3 +1,4 @@
+import logging
 import os
 from collections import defaultdict, deque
 
@@ -5,9 +6,17 @@ import discord
 from aiohttp import web
 from discord import app_commands
 from dotenv import load_dotenv
-from groq import AsyncGroq, RateLimitError
+from groq import (
+    AsyncGroq,
+    AuthenticationError,
+    BadRequestError,
+    NotFoundError,
+    RateLimitError,
+)
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("yuki")
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
@@ -47,7 +56,7 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print(f"health server listening on port {PORT}")
+    log.info("health server listening on port %s", PORT)
 
 
 class YukiClient(discord.Client):
@@ -83,10 +92,17 @@ async def ask_yuki(history_key: int, author_name: str, text: str) -> str:
         )
         reply = resp.choices[0].message.content.strip()
     except RateLimitError:
+        log.warning("Groq rate limit hit")
         reply = "ugh i'm out of energy (rate limited). try again in a bit 🥱"
+    except AuthenticationError:
+        log.exception("Groq rejected the API key (check GROQ_API_KEY)")
+        reply = "uhh my ai key is wrong (AuthenticationError). not my fault. probably."
+    except (NotFoundError, BadRequestError):
+        log.exception("Groq rejected the request (model name probably retired, check GROQ_MODEL=%s)", MODEL)
+        reply = "uhh my ai model is gone (model error). not my fault. probably."
     except Exception as e:
-        print(f"error: {e}")
-        reply = "uhh something broke. not my fault. probably."
+        log.exception("Unexpected error talking to Groq")
+        reply = f"uhh something broke ({type(e).__name__}). not my fault. probably."
 
     channel_history.append({"role": "assistant", "content": reply})
     return reply[:2000]
@@ -121,7 +137,7 @@ async def yuki_command(interaction: discord.Interaction, question: str):
 
 @client.event
 async def on_ready():
-    print(f"logged in as {client.user} (yuki is awake. barely.)")
+    log.info("logged in as %s (yuki is awake. barely.) using model %s", client.user, MODEL)
 
 
 @client.event
