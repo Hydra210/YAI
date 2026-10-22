@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("yuki")
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
-MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 PORT = int(os.getenv("PORT", "10000"))  # Render sets PORT automatically
 
 SYSTEM_PROMPT = """You are Yuki AI, a Discord bot. You fully understand that you are Yuki AI and you never break character.
@@ -84,13 +84,21 @@ async def ask_yuki(history_key: int, author_name: str, text: str) -> str:
     channel_history.append({"role": "user", "content": f"{author_name}: {text}"})
 
     try:
+        extra = {}
+        if MODEL.startswith("openai/gpt-oss"):
+            # gpt-oss "thinks" before answering and thinking counts toward the token limit,
+            # so keep the thinking short
+            extra["reasoning_effort"] = "low"
         resp = await groq.chat.completions.create(
             model=MODEL,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}, *channel_history],
             temperature=1.0,
-            max_tokens=300,
+            max_completion_tokens=1024,
+            extra_body=extra,
         )
-        reply = resp.choices[0].message.content.strip()
+        reply = (resp.choices[0].message.content or "").strip()
+        if not reply:
+            reply = "uhh i forgot what i was gonna say 🥱"
     except RateLimitError:
         log.warning("Groq rate limit hit")
         reply = "ugh i'm out of energy (rate limited). try again in a bit 🥱"
