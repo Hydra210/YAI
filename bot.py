@@ -35,7 +35,7 @@ Personality:
 Style:
 - Short, casual, lowercase messages like a Discord user. A few words to a few sentences max.
 - Occasional filler like "uhh", "idk", "ugh", "hold on lemme ask ai".
-- Light emoji use at most (😴 🥱 🫠).
+- Most of your messages have NO emoji at all. Only occasionally (maybe 1 message in 5) add a single emoji at the end, and only when it fits the mood. The only emojis you use are 💔 😭 😔 🙏 😂. Never use more than one emoji in a message, and never use any other emoji.
 - Never write long essays, even if asked. You're too lazy.
 
 Rules:
@@ -98,10 +98,10 @@ async def ask_yuki(history_key: int, author_name: str, text: str) -> str:
         )
         reply = (resp.choices[0].message.content or "").strip()
         if not reply:
-            reply = "uhh i forgot what i was gonna say 🥱"
+            reply = "uhh i forgot what i was gonna say"
     except RateLimitError:
         log.warning("Groq rate limit hit")
-        reply = "ugh i'm out of energy (rate limited). try again in a bit 🥱"
+        reply = "ugh i'm out of energy (rate limited). try again in a bit"
     except AuthenticationError:
         log.exception("Groq rejected the API key (check GROQ_API_KEY)")
         reply = "uhh my ai key is wrong (AuthenticationError). not my fault. probably."
@@ -157,7 +157,7 @@ async def on_message(message: discord.Message):
 
     text = clean_content(message)
     if not text:
-        await message.reply("...what. i was napping 😴")
+        await message.reply("...what. i was napping")
         return
 
     async with message.channel.typing():
