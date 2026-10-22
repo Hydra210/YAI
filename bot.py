@@ -29,12 +29,13 @@ PORT = int(os.getenv("PORT", "10000"))
 
 DB_PATH = os.getenv("DATABASE_PATH", "yuki.db")
 RETENTION_DAYS = int(os.getenv("MEMORY_RETENTION_DAYS", "90"))
-LEARN_INTERVAL = int(os.getenv("LEARN_INTERVAL_SECONDS", "45"))
-LEARN_EVERY = int(os.getenv("LEARN_EVERY_MESSAGES", "20"))
-VIBE_EVERY = int(os.getenv("VIBE_EVERY_MESSAGES", "60"))
+LEARN_INTERVAL = int(os.getenv("LEARN_INTERVAL_SECONDS", "180"))
+LEARN_EVERY = int(os.getenv("LEARN_EVERY_MESSAGES", "80"))
+VIBE_EVERY = int(os.getenv("VIBE_EVERY_MESSAGES", "120"))
 RECENT_LIMIT = 25
 MAX_PEOPLE = 5
 MEMORY_CHARS = 3500
+RESPONSE_QUEUE_LIMIT = int(os.getenv("RESPONSE_QUEUE_LIMIT", "8"))
 
 CREATOR = "Patrick"
 
@@ -231,6 +232,7 @@ class YukiClient(discord.Client):
 intents = discord.Intents.default()
 intents.message_content = True
 client = YukiClient(intents=intents)
+response_queue = asyncio.Queue(maxsize=RESPONSE_QUEUE_LIMIT)
 
 
 async def llm(messages, *, temperature=1.0, max_tokens=1024) -> str:
@@ -476,6 +478,52 @@ def should_respond(message: discord.Message) -> bool:
     return message.content.lower().startswith("yuki")
 
 
+async def process_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    scope = scope_of(message)
+    logged = render_content(message)
+    if logged:
+        await run(
+            mem.add_message, message.id, scope, message.channel.id,
+            message.author.id, message.author.display_name, logged,
+        )
+
+    if not should_respond(message):
+        return
+
+    text = render_content(message, strip_bot=True)
+    if not text:
+        await message.reply("...what. i was napping")
+        return
+
+    mentioned = [
+        m.id for m in message.mentions
+        if not m.bot and m.id != message.author.id
+    ]
+
+    async with message.channel.typing():
+        reply = await ask_yuki(
+            scope, message.channel.id, message.id,
+            message.author.id, message.author.display_name, text, mentioned,
+        )
+
+    sent = await message.reply(reply, mention_author=False)
+    await run(mem.add_message, sent.id, scope, message.channel.id, client.user.id, "yuki", reply, True)
+
+
+async def response_worker():
+    while not client.is_closed():
+        message = await response_queue.get()
+        try:
+            await process_message(message)
+        except Exception:
+            log.exception("response worker crashed while handling a queued message")
+        finally:
+            response_queue.task_done()
+
+
 @client.tree.command(name="yuki", description="ask yuki ai something")
 @app_commands.describe(question="what do you want to ask yuki?")
 @app_commands.allowed_installs(guilds=True, users=True)
@@ -539,42 +587,17 @@ async def memory_command(interaction: discord.Interaction, action: app_commands.
 @client.event
 async def on_ready():
     log.info("logged in as %s (yuki is awake. barely.) using model %s", client.user, MODEL)
+    if response_queue.empty():
+        client.loop.create_task(response_worker())
 
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
+    if response_queue.full():
+        log.info("dropping message while response queue is full: %s/%s", response_queue.qsize(), RESPONSE_QUEUE_LIMIT)
         return
 
-    scope = scope_of(message)
-    logged = render_content(message)
-    if logged:
-        await run(
-            mem.add_message, message.id, scope, message.channel.id,
-            message.author.id, message.author.display_name, logged,
-        )
-
-    if not should_respond(message):
-        return
-
-    text = render_content(message, strip_bot=True)
-    if not text:
-        await message.reply("...what. i was napping")
-        return
-
-    mentioned = [
-        m.id for m in message.mentions
-        if not m.bot and m.id != message.author.id
-    ]
-
-    async with message.channel.typing():
-        reply = await ask_yuki(
-            scope, message.channel.id, message.id,
-            message.author.id, message.author.display_name, text, mentioned,
-        )
-
-    sent = await message.reply(reply, mention_author=False)
-    await run(mem.add_message, sent.id, scope, message.channel.id, client.user.id, "yuki", reply, True)
+    await response_queue.put(message)
 
 
 @client.event
