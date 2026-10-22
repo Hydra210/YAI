@@ -12,33 +12,34 @@ async def app(scope, receive, send):
     path = scope.get("path", "/")
     if path in ("/", "/health"):
         body = b"ok"
+        status = 200
     else:
         body = b"not found"
+        status = 404
 
     await send(
         {
             "type": "http.response.start",
-            "status": 200 if path in ("/", "/health") else 404,
+            "status": status,
             "headers": [(b"content-type", b"text/plain; charset=utf-8")],
         }
     )
     await send({"type": "http.response.body", "body": body})
 
 
-def _start_discord_bot():
+def _start_bot():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         logging.warning("DISCORD_TOKEN is not set; skipping bot startup")
         return
 
     try:
-        import bot  # noqa: F401
-        from bot import client
+        import bot
 
         logging.info("Starting Discord bot in background thread")
-        client.run(token)
+        bot.client.run(token)
     except Exception:
-        logging.exception("Failed to start Discord bot from app entrypoint")
+        logging.exception("Failed to start Discord bot from Vercel entrypoint")
 
 
-threading.Thread(target=_start_discord_bot, daemon=True).start()
+threading.Thread(target=_start_bot, daemon=True).start()
