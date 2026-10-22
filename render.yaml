@@ -35,3 +35,11 @@ services:
         value: "1.25"
       - key: DISCORD_REPLY_GAP
         value: "0.75"
+      - key: SKILLS_MODE
+        value: auto
+      - key: OWNER_ID
+        sync: false
+      - key: ENABLE_RUN_PYTHON
+        value: "0"
+      - key: REPLY_TIMEOUT_SECONDS
+        value: "90"

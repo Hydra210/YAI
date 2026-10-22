@@ -25,6 +25,45 @@ Render's free plan wipes the filesystem on every deploy and restart, so Yuki wou
 
 If you're running a bot in servers besides your own, Discord's developer policy expects you to tell people what you store and honor deletion requests. `/memory forget` covers the deletion part, you'll still want a short privacy blurb.
 
+## Skills
+
+Yuki doesn't do the work himself. The bot's Python code (`skills.py`) does the lookups and the file
+work, and Yuki just decides which skill to call and then talks about the result. Skills only get shown to
+the model when the message looks like it needs them (`select_skills`), so normal chat costs exactly what
+it did before.
+
+| Group | Skills | Triggered by words like |
+|---|---|---|
+| discord | `get_user_info`, `get_server_info`, `list_channels`, `get_channel_info`, `read_channel` | who is, profile, joined, server, channel, `#channel` |
+| memory | `search_memory` (filter by person / channel / days back), `recall_user`, `get_context` | said, remember, earlier, last week, what did |
+| media | `image_info`, `convert_image` (gif/png/jpg/webp, animated stays animated), `resize_image` | gif, convert, resize, or just attaching an image |
+| util | `current_time`, `calculate` | time, date, math |
+| owner | `run_python` | run, python, script (only for `OWNER_ID`, only if `ENABLE_RUN_PYTHON=1`) |
+
+Images come from the message itself, the message you reply to, or the last few messages in the channel.
+`/yuki` also has an optional `image` field.
+
+**Privacy:** every skill that reads channels or old messages only looks at channels the *person asking*
+can see. Hidden channels act like they don't exist. This also applies to Yuki's automatic recall, which
+used to search every channel in the server.
+
+**Adding a skill:** write an `async def my_skill(ctx, ...)` in `skills.py`, decorate it with `@skill(...)`,
+and add trigger words to `TRIGGERS` if it needs a new group. That's it.
+
+**`run_python` is not a real sandbox.** It runs with an empty environment (no tokens), a temp dir, a 20s
+timeout and CPU/memory limits, but it can still read files on the host. That's why it's locked to
+`OWNER_ID` and off by default. Don't enable it on a box that holds secrets you wouldn't hand to the owner.
+
+Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`,
+`REPLY_TIMEOUT_SECONDS` (default 90), `MAX_CONCURRENT_REPLIES` (default 4), `GROQ_TIMEOUT_SECONDS` (default 40).
+
+## Why Yuki used to stop answering
+
+Old versions pushed every message in every channel through a single worker. If that one worker ever hung or
+died, normal chat stopped until a redeploy, while `/yuki` kept working because it skipped the queue. Now
+each reply is its own task with a hard timeout, one channel can't block another, and a crash only affects
+that one message. `/status` shows ready state, latency, replies, errors and timeouts for debugging.
+
 ## Run locally
 
 ```bash

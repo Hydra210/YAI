@@ -173,7 +173,7 @@ class Memory:
         """A user's latest messages in a scope, newest first."""
         with self.lock:
             rows = self.conn.execute(
-                "SELECT id, author, content, ts FROM messages "
+                "SELECT id, channel_id, author, content, ts FROM messages "
                 "WHERE scope = ? AND user_id = ? AND is_bot = 0 ORDER BY id DESC LIMIT ?",
                 (scope, user_id, limit),
             ).fetchall()
@@ -201,32 +201,101 @@ class Memory:
                 out.append(w)
         return out[:8]
 
-    def search(self, scope, query, limit=8) -> list:
+    def search(
+        self, scope, query, limit=8, *, user_id=None, channel_id=None, since=None, until=None, allow=None
+    ) -> list:
+        """Keyword search over saved messages in a scope.
+
+        user_id / channel_id / since / until (unix seconds) narrow it down. With no keywords but at least
+        one filter it just lists the newest matches. `allow` is a set of channel ids the caller may see
+        (None = no restriction); anything outside it is dropped so private channels never leak.
+        """
         terms = self._terms(query)
-        if not terms:
-            return []
+        fetch = limit if allow is None else min(limit * 10, 300)
+        filt, args = ["m.scope = ?", "m.is_bot = 0"], [scope]
+        if user_id is not None:
+            filt.append("m.user_id = ?")
+            args.append(user_id)
+        if channel_id is not None:
+            filt.append("m.channel_id = ?")
+            args.append(channel_id)
+        if since is not None:
+            filt.append("m.ts >= ?")
+            args.append(since)
+        if until is not None:
+            filt.append("m.ts <= ?")
+            args.append(until)
+        where = " AND ".join(filt)
+        cols = "m.id, m.channel_id, m.user_id, m.author, m.content, m.ts"
         try:
             with self.lock:
-                if self.fts:
+                if not terms:
+                    if len(filt) == 2:  # nothing to search for and nothing to filter by
+                        return []
+                    rows = self.conn.execute(
+                        f"SELECT {cols} FROM messages m WHERE {where} ORDER BY m.id DESC LIMIT ?",
+                        (*args, fetch),
+                    ).fetchall()
+                elif self.fts:
                     match = " OR ".join(f'"{t}"' for t in terms)
                     rows = self.conn.execute(
-                        "SELECT m.id, m.user_id, m.author, m.content, m.ts "
-                        "FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid "
-                        "WHERE messages_fts MATCH ? AND m.scope = ? AND m.is_bot = 0 "
-                        "ORDER BY bm25(messages_fts) LIMIT ?",
-                        (match, scope, limit),
+                        f"SELECT {cols} FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid "
+                        f"WHERE messages_fts MATCH ? AND {where} ORDER BY bm25(messages_fts) LIMIT ?",
+                        (match, *args, fetch),
                     ).fetchall()
                 else:
                     clause = " OR ".join("m.content LIKE ?" for _ in terms)
                     rows = self.conn.execute(
-                        "SELECT m.id, m.user_id, m.author, m.content, m.ts FROM messages m "
-                        f"WHERE m.scope = ? AND m.is_bot = 0 AND ({clause}) ORDER BY m.id DESC LIMIT ?",
-                        (scope, *[f"%{t}%" for t in terms], limit),
+                        f"SELECT {cols} FROM messages m WHERE {where} AND ({clause}) ORDER BY m.id DESC LIMIT ?",
+                        (*args, *[f"%{t}%" for t in terms], fetch),
                     ).fetchall()
         except sqlite3.OperationalError:
             log.exception("memory search failed")
             return []
+        out = [dict(r) for r in rows]
+        if allow is not None:
+            out = [r for r in out if r["channel_id"] in allow]
+        return out[:limit]
+
+    def find_user(self, scope, name, limit=5) -> list:
+        """People Yuki has seen in this scope whose last-known display name matches `name`."""
+        n = (name or "").strip().lstrip("@").lower()
+        if not n:
+            return []
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT user_id, name FROM profiles WHERE scope = ? AND lower(name) = ? LIMIT ?",
+                (scope, n, limit),
+            ).fetchall()
+            if not rows:
+                like = n.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                rows = self.conn.execute(
+                    "SELECT user_id, name FROM profiles WHERE scope = ? AND lower(name) LIKE ? ESCAPE '\\' "
+                    "ORDER BY updated DESC, pending DESC LIMIT ?",
+                    (scope, f"%{like}%", limit),
+                ).fetchall()
         return [dict(r) for r in rows]
+
+    def around(self, msg_id, before=3, after=3):
+        """The saved messages around one message, oldest first (includes Yuki's own replies)."""
+        with self.lock:
+            base = self.conn.execute(
+                "SELECT id, scope, channel_id, author, content, ts FROM messages WHERE id = ?", (msg_id,)
+            ).fetchone()
+            if not base:
+                return None
+            prev = self.conn.execute(
+                "SELECT id, author, content, ts FROM messages WHERE channel_id = ? AND id < ? "
+                "ORDER BY id DESC LIMIT ?",
+                (base["channel_id"], msg_id, before),
+            ).fetchall()
+            nxt = self.conn.execute(
+                "SELECT id, author, content, ts FROM messages WHERE channel_id = ? AND id > ? "
+                "ORDER BY id ASC LIMIT ?",
+                (base["channel_id"], msg_id, after),
+            ).fetchall()
+        rows = [dict(r) for r in reversed(prev)] + [dict(base)] + [dict(r) for r in nxt]
+        return {"scope": base["scope"], "channel_id": base["channel_id"], "rows": rows}
 
     # ---------- profiles (learned) ----------
 
