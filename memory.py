@@ -1,22 +1,29 @@
-"""Persistent memory for Yuki.
+"""Persistent memory for Yuki, stored in Postgres (set DATABASE_URL).
 
-Stores everything in one SQLite file:
-  - messages  : a log of what people said (searchable with FTS5 for recall)
-  - profiles  : learned notes + "how this person talks", per user per server
+Everything Yuki remembers lives in Postgres, nothing in a local file, so it survives Render restarts and deploys:
+  - messages  : a log of what people said (full-text searchable for recall)
+  - profiles  : learned notes + "how this person talks" + server role tier, per user per server
   - scopes    : learned server vibe / slang, per server
+  - facts     : "fast memory": per-server facts (rules, roles, notes...) that are also cached in RAM at startup,
+                so Yuki knows them instantly without any lookup
+  - mod_log   : when somebody broke a rule (no message text is kept, just what/when)
   - optouts   : users who asked Yuki to forget them
 
 "scope" is the server id. DMs use -user_id so one person's DMs never leak to anyone else.
 All methods are synchronous and thread-safe; call them with asyncio.to_thread from the bot.
+The fast_* readers only touch RAM and are safe to call straight from async code.
 """
 
 import json
 import logging
 import re
-import sqlite3
 import threading
 import time
-from pathlib import Path
+from typing import Any
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 
 log = logging.getLogger("yuki.memory")
 
@@ -31,173 +38,254 @@ STOPWORDS = {
     "him", "she", "out", "all", "one", "yes", "yeah", "lol", "lmao", "bro", "dude", "ever",
 }
 
-BASE_SCHEMA = """
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
-    id         INTEGER PRIMARY KEY,
-    scope      INTEGER NOT NULL,
-    channel_id INTEGER NOT NULL,
-    user_id    INTEGER NOT NULL,
-    author     TEXT    NOT NULL,
-    content    TEXT    NOT NULL,
-    ts         INTEGER NOT NULL,
-    is_bot     INTEGER NOT NULL DEFAULT 0
+    id         BIGINT PRIMARY KEY,
+    scope      BIGINT   NOT NULL,
+    channel_id BIGINT   NOT NULL,
+    user_id    BIGINT   NOT NULL,
+    author     TEXT     NOT NULL,
+    content    TEXT     NOT NULL,
+    ts         BIGINT   NOT NULL,
+    is_bot     SMALLINT NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_user    ON messages(scope, user_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_ts      ON messages(ts);
+CREATE INDEX IF NOT EXISTS idx_messages_fts     ON messages USING GIN (to_tsvector('simple', content));
 
 CREATE TABLE IF NOT EXISTS profiles (
-    scope   INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    name    TEXT    NOT NULL DEFAULT '',
-    notes   TEXT    NOT NULL DEFAULT '[]',
-    style   TEXT    NOT NULL DEFAULT '',
-    pending INTEGER NOT NULL DEFAULT 0,
-    updated INTEGER NOT NULL DEFAULT 0,
+    scope    BIGINT NOT NULL,
+    user_id  BIGINT NOT NULL,
+    name     TEXT   NOT NULL DEFAULT '',
+    username TEXT   NOT NULL DEFAULT '',
+    notes    TEXT   NOT NULL DEFAULT '[]',
+    style    TEXT   NOT NULL DEFAULT '',
+    tier     TEXT   NOT NULL DEFAULT '',
+    top_role TEXT   NOT NULL DEFAULT '',
+    pending  INTEGER NOT NULL DEFAULT 0,
+    updated  BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (scope, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS scopes (
-    scope   INTEGER PRIMARY KEY,
-    vibe    TEXT    NOT NULL DEFAULT '{}',
+    scope   BIGINT PRIMARY KEY,
+    vibe    TEXT   NOT NULL DEFAULT '{}',
     pending INTEGER NOT NULL DEFAULT 0,
-    updated INTEGER NOT NULL DEFAULT 0
+    updated BIGINT NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS facts (
+    scope   BIGINT NOT NULL,
+    key     TEXT   NOT NULL,
+    value   TEXT   NOT NULL,
+    updated BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, key)
+);
+
+CREATE TABLE IF NOT EXISTS mod_log (
+    id         BIGSERIAL PRIMARY KEY,
+    scope      BIGINT NOT NULL,
+    user_id    BIGINT NOT NULL,
+    category   TEXT   NOT NULL,
+    rule_n     INTEGER,
+    channel_id BIGINT,
+    message_id BIGINT,
+    ts         BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mod_log_user ON mod_log(scope, user_id, ts);
 
 CREATE TABLE IF NOT EXISTS optouts (
-    user_id INTEGER PRIMARY KEY
+    user_id BIGINT PRIMARY KEY
 );
 """
 
-FTS_SCHEMA = """
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content, content='messages', content_rowid='id', tokenize='porter unicode61'
-);
-CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
-CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
-END;
-CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF content ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-END;
-"""
+
+def _json(raw, default):
+    try:
+        return json.loads(raw) if raw else default
+    except (json.JSONDecodeError, TypeError):
+        return default
 
 
 class Memory:
-    def __init__(self, path: str, retention_days: int = 90):
-        parent = Path(path).resolve().parent
-        parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, database_url: str, retention_days: int = 90, pool_max: int = 5):
+        if not (database_url or "").strip():
+            raise RuntimeError(
+                "DATABASE_URL is not set. Yuki's memory lives in Postgres only (no local fallback), "
+                "so set DATABASE_URL to a Postgres connection string."
+            )
         self.retention_days = retention_days
-        self.lock = threading.Lock()
-        self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.fts = True
-        self._init_schema()
-        self.optouts = self._load_optouts()
-        log.info("memory ready at %s (fts=%s, %d opt-outs)", path, self.fts, len(self.optouts))
+        self.slots = threading.BoundedSemaphore(pool_max)  # the pool raises when full instead of waiting
+        self.pool = self._open_pool(database_url.strip(), pool_max)
+        self._do(lambda cur: cur.execute(SCHEMA))
+        self.optouts = {r["user_id"] for r in self._do(self._fetch("SELECT user_id FROM optouts"))}
+        self.fast: dict[int, dict[str, Any]] = {}
+        for r in self._do(self._fetch("SELECT scope, key, value FROM facts")):
+            self.fast.setdefault(r["scope"], {})[r["key"]] = _json(r["value"], None)
+        log.info(
+            "memory ready on postgres (%d opt-outs, fast memory for %d servers)",
+            len(self.optouts), len(self.fast),
+        )
 
-    # ---------- setup ----------
+    # ---------- connection handling ----------
 
-    def _init_schema(self):
-        with self.lock:
-            self.conn.execute("PRAGMA journal_mode=WAL")
-            self.conn.executescript(BASE_SCHEMA)
+    @staticmethod
+    def _open_pool(url: str, pool_max: int):
+        last = None
+        for attempt in range(1, 5):
             try:
-                self.conn.executescript(FTS_SCHEMA)
-            except sqlite3.OperationalError:
-                self.fts = False
-                log.warning("FTS5 not available, recall will use slower LIKE search")
-            self.conn.commit()
+                return ThreadedConnectionPool(
+                    1, pool_max, url,
+                    connect_timeout=10,
+                    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
+                )
+            except psycopg2.OperationalError as e:
+                last = e
+                log.warning("postgres not reachable yet (attempt %d/4): %s", attempt, str(e).strip()[:120])
+                time.sleep(2 * attempt)
+        raise RuntimeError(f"couldn't connect to Postgres: {last}")
 
-    def _load_optouts(self) -> set:
-        with self.lock:
-            return {r["user_id"] for r in self.conn.execute("SELECT user_id FROM optouts")}
+    def _do(self, work, retries: int = 1):
+        """Run work(cursor) in one transaction. Retries once on a dropped connection (Neon/Supabase idle drops)."""
+        for attempt in range(retries + 1):
+            self.slots.acquire()
+            conn = None
+            bad = False
+            try:
+                conn = self.pool.getconn()
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    result = work(cur)
+                conn.commit()
+                return result
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                bad = True
+                if attempt == retries:
+                    raise
+                log.warning("postgres connection dropped (%s), retrying", type(e).__name__)
+            except Exception:
+                try:
+                    if conn is not None:
+                        conn.rollback()
+                except Exception:
+                    bad = True
+                raise
+            finally:
+                try:
+                    if conn is not None:
+                        self.pool.putconn(conn, close=bad)
+                finally:
+                    self.slots.release()
+
+    @staticmethod
+    def _fetch(sql, args=()):
+        def work(cur):
+            cur.execute(sql, args)
+            return cur.fetchall()
+
+        return work
+
+    def _all(self, sql, args=()):
+        return [dict(r) for r in self._do(self._fetch(sql, args))]
+
+    def _one(self, sql, args=()):
+        rows = self._do(self._fetch(sql, args))
+        return dict(rows[0]) if rows else None
+
+    def _exec(self, sql, args=()) -> int:
+        def work(cur):
+            cur.execute(sql, args)
+            return cur.rowcount
+
+        return self._do(work)
 
     # ---------- message log ----------
 
-    def add_message(self, msg_id, scope, channel_id, user_id, author, content, is_bot=False) -> bool:
-        content = (content or "").strip()[:MAX_CHARS]
+    def add_message(
+        self, msg_id, scope, channel_id, user_id, author, content, is_bot=False,
+        tier="", top_role="", username="",
+    ) -> bool:
+        content = (content or "").strip()[:MAX_CHARS].replace("\x00", "")
         if not content:
             return False
         if not is_bot and user_id in self.optouts:
             return False
         now = int(time.time())
-        with self.lock:
-            cur = self.conn.execute(
-                "INSERT OR IGNORE INTO messages(id, scope, channel_id, user_id, author, content, ts, is_bot) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+
+        def work(cur):
+            cur.execute(
+                "INSERT INTO messages(id, scope, channel_id, user_id, author, content, ts, is_bot) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
                 (msg_id, scope, channel_id, user_id, author, content, now, int(is_bot)),
             )
             if cur.rowcount and not is_bot:
-                self.conn.execute(
-                    "INSERT INTO profiles(scope, user_id, name, pending) VALUES (?, ?, ?, 1) "
-                    "ON CONFLICT(scope, user_id) DO UPDATE SET name = excluded.name, pending = pending + 1",
-                    (scope, user_id, author),
+                cur.execute(
+                    "INSERT INTO profiles(scope, user_id, name, username, tier, top_role, pending) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 1) "
+                    "ON CONFLICT (scope, user_id) DO UPDATE SET "
+                    " name = EXCLUDED.name, pending = profiles.pending + 1, "
+                    " username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE profiles.username END, "
+                    " tier = CASE WHEN EXCLUDED.tier <> '' THEN EXCLUDED.tier ELSE profiles.tier END, "
+                    " top_role = CASE WHEN EXCLUDED.tier <> '' THEN EXCLUDED.top_role ELSE profiles.top_role END",
+                    (scope, user_id, author, username or "", tier or "", top_role or ""),
                 )
                 if scope > 0:
-                    self.conn.execute(
-                        "INSERT INTO scopes(scope, pending) VALUES (?, 1) "
-                        "ON CONFLICT(scope) DO UPDATE SET pending = pending + 1",
+                    cur.execute(
+                        "INSERT INTO scopes(scope, pending) VALUES (%s, 1) "
+                        "ON CONFLICT (scope) DO UPDATE SET pending = scopes.pending + 1",
                         (scope,),
                     )
-            self.conn.commit()
+
+        self._do(work)
         return True
 
     def edit_message(self, msg_id, content):
-        content = (content or "").strip()[:MAX_CHARS]
-        if not content:
-            return
-        with self.lock:
-            self.conn.execute("UPDATE messages SET content = ? WHERE id = ?", (content, msg_id))
-            self.conn.commit()
+        content = (content or "").strip()[:MAX_CHARS].replace("\x00", "")
+        if content:
+            self._exec("UPDATE messages SET content = %s WHERE id = %s", (content, msg_id))
 
     def delete_message(self, msg_id):
-        with self.lock:
-            self.conn.execute("DELETE FROM messages WHERE id = ?", (msg_id,))
-            self.conn.commit()
+        self._exec("DELETE FROM messages WHERE id = %s", (msg_id,))
 
     def recent(self, channel_id, limit=15) -> list:
         """Last `limit` messages in a channel, oldest first."""
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT id, user_id, author, content, ts, is_bot FROM messages "
-                "WHERE channel_id = ? ORDER BY id DESC LIMIT ?",
-                (channel_id, limit),
-            ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        rows = self._all(
+            "SELECT id, user_id, author, content, ts, is_bot FROM messages "
+            "WHERE channel_id = %s ORDER BY id DESC LIMIT %s",
+            (channel_id, limit),
+        )
+        return list(reversed(rows))
 
     def user_messages(self, scope, user_id, limit=10) -> list:
         """A user's latest messages in a scope, newest first."""
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT id, channel_id, author, content, ts FROM messages "
-                "WHERE scope = ? AND user_id = ? AND is_bot = 0 ORDER BY id DESC LIMIT ?",
-                (scope, user_id, limit),
-            ).fetchall()
-        return [dict(r) for r in rows]
+        return self._all(
+            "SELECT id, channel_id, author, content, ts FROM messages "
+            "WHERE scope = %s AND user_id = %s AND is_bot = 0 ORDER BY id DESC LIMIT %s",
+            (scope, user_id, limit),
+        )
 
     def scope_sample(self, scope, limit=60) -> list:
         """Latest messages from anyone in a scope, oldest first."""
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT author, content FROM messages WHERE scope = ? AND is_bot = 0 "
-                "ORDER BY id DESC LIMIT ?",
-                (scope, limit),
-            ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        rows = self._all(
+            "SELECT author, content FROM messages WHERE scope = %s AND is_bot = 0 ORDER BY id DESC LIMIT %s",
+            (scope, limit),
+        )
+        return list(reversed(rows))
 
     # ---------- recall ----------
 
     @staticmethod
+    def _stem(w: str) -> str:
+        for suf in ("ing", "ed", "es", "s"):
+            if w.endswith(suf) and len(w) - len(suf) >= 3:
+                return w[: -len(suf)]
+        return w
+
+    @staticmethod
     def _terms(query: str) -> list:
-        words = re.findall(r"[\w']{3,}", (query or "").lower())
         out = []
-        for w in words:
-            w = w.strip("'")
-            if len(w) >= 3 and w not in STOPWORDS and w not in out:
+        for w in re.findall(r"[^\W_]{3,}", (query or "").lower()):
+            if w not in STOPWORDS and w not in out:
                 out.append(w)
         return out[:8]
 
@@ -210,216 +298,222 @@ class Memory:
         one filter it just lists the newest matches. `allow` is a set of channel ids the caller may see
         (None = no restriction); anything outside it is dropped so private channels never leak.
         """
+        if allow is not None and not allow:
+            return []
         terms = self._terms(query)
-        fetch = limit if allow is None else min(limit * 10, 300)
-        filt, args = ["m.scope = ?", "m.is_bot = 0"], [scope]
+        filt, args = ["m.scope = %s", "m.is_bot = 0"], [scope]
         if user_id is not None:
-            filt.append("m.user_id = ?")
+            filt.append("m.user_id = %s")
             args.append(user_id)
         if channel_id is not None:
-            filt.append("m.channel_id = ?")
+            filt.append("m.channel_id = %s")
             args.append(channel_id)
         if since is not None:
-            filt.append("m.ts >= ?")
+            filt.append("m.ts >= %s")
             args.append(since)
         if until is not None:
-            filt.append("m.ts <= ?")
+            filt.append("m.ts <= %s")
             args.append(until)
+        if allow is not None:
+            filt.append("m.channel_id = ANY(%s::bigint[])")
+            args.append(list(allow))
         where = " AND ".join(filt)
         cols = "m.id, m.channel_id, m.user_id, m.author, m.content, m.ts"
         try:
-            with self.lock:
-                if not terms:
-                    if len(filt) == 2:  # nothing to search for and nothing to filter by
-                        return []
-                    rows = self.conn.execute(
-                        f"SELECT {cols} FROM messages m WHERE {where} ORDER BY m.id DESC LIMIT ?",
-                        (*args, fetch),
-                    ).fetchall()
-                elif self.fts:
-                    match = " OR ".join(f'"{t}"' for t in terms)
-                    rows = self.conn.execute(
-                        f"SELECT {cols} FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid "
-                        f"WHERE messages_fts MATCH ? AND {where} ORDER BY bm25(messages_fts) LIMIT ?",
-                        (match, *args, fetch),
-                    ).fetchall()
-                else:
-                    clause = " OR ".join("m.content LIKE ?" for _ in terms)
-                    rows = self.conn.execute(
-                        f"SELECT {cols} FROM messages m WHERE {where} AND ({clause}) ORDER BY m.id DESC LIMIT ?",
-                        (*args, *[f"%{t}%" for t in terms], fetch),
-                    ).fetchall()
-        except sqlite3.OperationalError:
+            if not terms:
+                if len(filt) == 2:  # nothing to search for and nothing to filter by
+                    return []
+                return self._all(
+                    f"SELECT {cols} FROM messages m WHERE {where} ORDER BY m.id DESC LIMIT %s", (*args, limit)
+                )
+            tsq = " | ".join(f"{self._stem(t)}:*" for t in terms)
+            return self._all(
+                f"SELECT {cols} FROM messages m "
+                f"WHERE to_tsvector('simple', m.content) @@ to_tsquery('simple', %s) AND {where} "
+                f"ORDER BY ts_rank(to_tsvector('simple', m.content), to_tsquery('simple', %s)) DESC, m.id DESC "
+                f"LIMIT %s",
+                (tsq, *args, tsq, limit),
+            )
+        except psycopg2.Error:
             log.exception("memory search failed")
             return []
-        out = [dict(r) for r in rows]
-        if allow is not None:
-            out = [r for r in out if r["channel_id"] in allow]
-        return out[:limit]
 
-    def find_user(self, scope, name, limit=5) -> list:
-        """People Yuki has seen in this scope whose last-known display name matches `name`."""
+    def find_user(self, scope, name, limit=5, exact=False) -> list:
+        """People Yuki has seen in this scope whose last-known display name or username matches `name`.
+        exact=True skips the partial-match fallback (used before pinging anyone)."""
         n = (name or "").strip().lstrip("@").lower()
         if not n:
             return []
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT user_id, name FROM profiles WHERE scope = ? AND lower(name) = ? LIMIT ?",
-                (scope, n, limit),
-            ).fetchall()
-            if not rows:
-                like = n.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                rows = self.conn.execute(
-                    "SELECT user_id, name FROM profiles WHERE scope = ? AND lower(name) LIKE ? ESCAPE '\\' "
-                    "ORDER BY updated DESC, pending DESC LIMIT ?",
-                    (scope, f"%{like}%", limit),
-                ).fetchall()
-        return [dict(r) for r in rows]
+        rows = self._all(
+            "SELECT user_id, name FROM profiles WHERE scope = %s AND (lower(name) = %s OR lower(username) = %s) "
+            "LIMIT %s",
+            (scope, n, n, limit),
+        )
+        if rows or exact:
+            return rows
+        like = n.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return self._all(
+            "SELECT user_id, name FROM profiles WHERE scope = %s AND (lower(name) LIKE %s OR lower(username) LIKE %s) "
+            "ORDER BY updated DESC, pending DESC LIMIT %s",
+            (scope, f"%{like}%", f"%{like}%", limit),
+        )
 
     def around(self, msg_id, before=3, after=3):
         """The saved messages around one message, oldest first (includes Yuki's own replies)."""
-        with self.lock:
-            base = self.conn.execute(
-                "SELECT id, scope, channel_id, author, content, ts FROM messages WHERE id = ?", (msg_id,)
-            ).fetchone()
-            if not base:
-                return None
-            prev = self.conn.execute(
-                "SELECT id, author, content, ts FROM messages WHERE channel_id = ? AND id < ? "
-                "ORDER BY id DESC LIMIT ?",
-                (base["channel_id"], msg_id, before),
-            ).fetchall()
-            nxt = self.conn.execute(
-                "SELECT id, author, content, ts FROM messages WHERE channel_id = ? AND id > ? "
-                "ORDER BY id ASC LIMIT ?",
-                (base["channel_id"], msg_id, after),
-            ).fetchall()
-        rows = [dict(r) for r in reversed(prev)] + [dict(base)] + [dict(r) for r in nxt]
+        base = self._one(
+            "SELECT id, scope, channel_id, author, content, ts FROM messages WHERE id = %s", (msg_id,)
+        )
+        if not base:
+            return None
+        prev = self._all(
+            "SELECT id, author, content, ts FROM messages WHERE channel_id = %s AND id < %s "
+            "ORDER BY id DESC LIMIT %s",
+            (base["channel_id"], msg_id, before),
+        )
+        nxt = self._all(
+            "SELECT id, author, content, ts FROM messages WHERE channel_id = %s AND id > %s "
+            "ORDER BY id ASC LIMIT %s",
+            (base["channel_id"], msg_id, after),
+        )
+        rows = list(reversed(prev)) + [base] + nxt
         return {"scope": base["scope"], "channel_id": base["channel_id"], "rows": rows}
 
     # ---------- profiles (learned) ----------
 
     def get_profile(self, scope, user_id):
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT name, notes, style FROM profiles WHERE scope = ? AND user_id = ?",
-                (scope, user_id),
-            ).fetchone()
+        row = self._one(
+            "SELECT name, notes, style, tier, top_role FROM profiles WHERE scope = %s AND user_id = %s",
+            (scope, user_id),
+        )
         if not row:
             return None
-        try:
-            notes = json.loads(row["notes"] or "[]")
-        except json.JSONDecodeError:
-            notes = []
-        return {"name": row["name"], "notes": notes, "style": row["style"]}
+        row["notes"] = _json(row["notes"], [])
+        return row
 
-    def next_profile_job(self, min_pending):
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT scope, user_id, name, notes, style, pending FROM profiles "
-                "WHERE pending >= ? ORDER BY pending DESC LIMIT 1",
-                (min_pending,),
-            ).fetchone()
+    def next_profile_job(self, min_pending, priority_ids=None, priority_min=None):
+        """The next person to (re)learn. People in priority_ids are picked up sooner (priority_min messages)."""
+        pids = list(priority_ids or [])
+        pmin = priority_min if priority_min is not None else min_pending
+        row = self._one(
+            "SELECT scope, user_id, name, notes, style, pending FROM profiles "
+            "WHERE pending >= %s OR (user_id = ANY(%s::bigint[]) AND pending >= %s) "
+            "ORDER BY (user_id = ANY(%s::bigint[])) DESC, pending DESC LIMIT 1",
+            (min_pending, pids, pmin, pids),
+        )
         if not row:
             return None
-        job = dict(row)
-        try:
-            job["notes"] = json.loads(job["notes"] or "[]")
-        except json.JSONDecodeError:
-            job["notes"] = []
-        return job
+        row["notes"] = _json(row["notes"], [])
+        return row
 
     def save_profile(self, scope, user_id, notes=None, style=None):
         """Save learned notes/style and clear the pending counter. Pass None to only reset pending."""
-        with self.lock:
-            if notes is not None and style is not None:
-                self.conn.execute(
-                    "UPDATE profiles SET notes = ?, style = ?, pending = 0, updated = ? "
-                    "WHERE scope = ? AND user_id = ?",
-                    (json.dumps(notes), style, int(time.time()), scope, user_id),
-                )
-            else:
-                self.conn.execute(
-                    "UPDATE profiles SET pending = 0 WHERE scope = ? AND user_id = ?",
-                    (scope, user_id),
-                )
-            self.conn.commit()
+        if notes is not None and style is not None:
+            self._exec(
+                "UPDATE profiles SET notes = %s, style = %s, pending = 0, updated = %s "
+                "WHERE scope = %s AND user_id = %s",
+                (json.dumps(notes), style, int(time.time()), scope, user_id),
+            )
+        else:
+            self._exec("UPDATE profiles SET pending = 0 WHERE scope = %s AND user_id = %s", (scope, user_id))
 
     # ---------- server vibe (learned) ----------
 
     def get_vibe(self, scope) -> dict:
-        with self.lock:
-            row = self.conn.execute("SELECT vibe FROM scopes WHERE scope = ?", (scope,)).fetchone()
-        if not row:
-            return {}
-        try:
-            return json.loads(row["vibe"] or "{}")
-        except json.JSONDecodeError:
-            return {}
+        row = self._one("SELECT vibe FROM scopes WHERE scope = %s", (scope,))
+        return _json(row["vibe"], {}) if row else {}
 
     def next_scope_job(self, min_pending):
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT scope, vibe, pending FROM scopes WHERE pending >= ? ORDER BY pending DESC LIMIT 1",
-                (min_pending,),
-            ).fetchone()
+        row = self._one(
+            "SELECT scope, vibe, pending FROM scopes WHERE pending >= %s ORDER BY pending DESC LIMIT 1",
+            (min_pending,),
+        )
         if not row:
             return None
-        job = dict(row)
-        try:
-            job["vibe"] = json.loads(job["vibe"] or "{}")
-        except json.JSONDecodeError:
-            job["vibe"] = {}
-        return job
+        row["vibe"] = _json(row["vibe"], {})
+        return row
 
     def save_vibe(self, scope, vibe=None):
-        with self.lock:
-            if vibe is not None:
-                self.conn.execute(
-                    "UPDATE scopes SET vibe = ?, pending = 0, updated = ? WHERE scope = ?",
-                    (json.dumps(vibe), int(time.time()), scope),
-                )
-            else:
-                self.conn.execute("UPDATE scopes SET pending = 0 WHERE scope = ?", (scope,))
-            self.conn.commit()
+        if vibe is not None:
+            self._exec(
+                "UPDATE scopes SET vibe = %s, pending = 0, updated = %s WHERE scope = %s",
+                (json.dumps(vibe), int(time.time()), scope),
+            )
+        else:
+            self._exec("UPDATE scopes SET pending = 0 WHERE scope = %s", (scope,))
+
+    # ---------- fast memory (per-server facts, cached in RAM) ----------
+
+    def fast_get(self, scope, key, default=None):
+        """RAM only, never touches the database. Safe to call from async code."""
+        return self.fast.get(scope, {}).get(key, default)
+
+    def fast_all(self, scope) -> dict:
+        return dict(self.fast.get(scope, {}))
+
+    def fast_set(self, scope, key, value):
+        """Write to Postgres first, then to the RAM cache."""
+        self._exec(
+            "INSERT INTO facts(scope, key, value, updated) VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value, updated = EXCLUDED.updated",
+            (scope, key, json.dumps(value), int(time.time())),
+        )
+        self.fast.setdefault(scope, {})[key] = value
+
+    def fast_delete(self, scope, key):
+        self._exec("DELETE FROM facts WHERE scope = %s AND key = %s", (scope, key))
+        self.fast.get(scope, {}).pop(key, None)
+
+    # ---------- moderation log ----------
+
+    def log_violation(self, scope, user_id, category, rule_n, channel_id, message_id):
+        self._exec(
+            "INSERT INTO mod_log(scope, user_id, category, rule_n, channel_id, message_id, ts) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (scope, user_id, category, rule_n, channel_id, message_id, int(time.time())),
+        )
+
+    def violation_count(self, scope, user_id, within_s=86400) -> int:
+        row = self._one(
+            "SELECT COUNT(*) AS c FROM mod_log WHERE scope = %s AND user_id = %s AND ts >= %s",
+            (scope, user_id, int(time.time()) - within_s),
+        )
+        return int(row["c"]) if row else 0
 
     # ---------- privacy ----------
 
     def forget_user(self, user_id) -> int:
         """Delete everything about a user and stop remembering them. Returns messages deleted."""
-        with self.lock:
-            n = self.conn.execute(
-                "DELETE FROM messages WHERE user_id = ? AND is_bot = 0", (user_id,)
-            ).rowcount
+
+        def work(cur):
+            cur.execute("DELETE FROM messages WHERE user_id = %s AND is_bot = 0", (user_id,))
+            n = cur.rowcount
             # their DM scope is private to them, so clear Yuki's side of it too
-            self.conn.execute("DELETE FROM messages WHERE scope = ?", (-user_id,))
-            self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
-            self.conn.execute("INSERT OR IGNORE INTO optouts(user_id) VALUES (?)", (user_id,))
-            self.conn.commit()
+            cur.execute("DELETE FROM messages WHERE scope = %s", (-user_id,))
+            cur.execute("DELETE FROM profiles WHERE user_id = %s", (user_id,))
+            cur.execute("INSERT INTO optouts(user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,))
+            return n
+
+        n = self._do(work)
         self.optouts.add(user_id)
         return n
 
     def resume_user(self, user_id):
-        with self.lock:
-            self.conn.execute("DELETE FROM optouts WHERE user_id = ?", (user_id,))
-            self.conn.commit()
+        self._exec("DELETE FROM optouts WHERE user_id = %s", (user_id,))
         self.optouts.discard(user_id)
 
     def user_stats(self, scope, user_id) -> dict:
-        with self.lock:
-            count = self.conn.execute(
-                "SELECT COUNT(*) AS c FROM messages WHERE scope = ? AND user_id = ? AND is_bot = 0",
-                (scope, user_id),
-            ).fetchone()["c"]
-        return {"messages": count, "opted_out": user_id in self.optouts}
+        row = self._one(
+            "SELECT COUNT(*) AS c FROM messages WHERE scope = %s AND user_id = %s AND is_bot = 0",
+            (scope, user_id),
+        )
+        return {"messages": int(row["c"]) if row else 0, "opted_out": user_id in self.optouts}
 
     # ---------- housekeeping ----------
 
     def prune(self) -> int:
         cutoff = int(time.time()) - self.retention_days * 86400
-        with self.lock:
-            n = self.conn.execute("DELETE FROM messages WHERE ts < ?", (cutoff,)).rowcount
-            self.conn.commit()
+        n = self._exec("DELETE FROM messages WHERE ts < %s", (cutoff,))
+        self._exec("DELETE FROM mod_log WHERE ts < %s", (cutoff,))
         if n:
             log.info("pruned %d old messages", n)
         return n

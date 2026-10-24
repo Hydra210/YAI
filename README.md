@@ -14,19 +14,61 @@ and he has a sandboxed python fallback for when no tool fits.
 
 ## Memory
 
-Yuki reads every message in every channel he can see, even ones not aimed at him, and keeps it in a SQLite database (`memory.py`).
+Yuki reads every message in every channel he can see, even ones not aimed at him, and keeps it in **Postgres** (`memory.py`).
+There is no local-file fallback on purpose: a file on Render's free plan is wiped on every deploy, so the bot refuses to
+start without `DATABASE_URL`. Everything below survives restarts and redeploys.
 
-- **Recall:** when someone talks to him, he searches the server's old messages for relevant ones and sees the last 15 messages in the channel, so he can answer things like "what did @bob say about valorant".
-- **Learning:** in the background he writes short notes per person (interests, running jokes, how they type) and per server (vibe, slang, inside jokes). Those notes shape how he replies, so he picks up each person's slang over time. It runs at most one Groq call every 45 seconds.
+- **Recall:** when someone talks to him he searches the server's old messages (full-text search) and sees the last 25 messages in the
+  channel, so he can answer things like "what did @bob say about valorant".
+- **Learning:** in the background he writes short notes per person (interests, running jokes, how they type) and per server (vibe, slang, inside jokes).
+  Those notes shape how he replies, so he picks up how each person talks over time.
+- **Fast memory:** per-server facts (the rules, the roles and who is staff, notes staff added with `/mod note`) live in Postgres *and* are
+  mirrored in RAM at startup. They are put straight into his prompt, so he just knows them with no lookup.
 - **Spelling:** his creator's name is forced to "Patrick" in code, so the model can't butcher it.
-- **Privacy:** memory is per server, and DMs are private to each user. Edited messages are updated and deleted messages are removed. `/memory show` lists what he knows about you, `/memory forget` wipes it and stops him remembering you, `/memory resume` turns it back on. Messages older than 90 days are pruned.
-- He never stores sensitive stuff (health, sexuality, religion, politics, money, personal info) in his notes.
+- **Privacy:** memory is per server, and DMs are private to each user. Edited messages are updated and deleted messages are removed.
+  `/memory show` lists what he knows about you, `/memory forget` wipes it (and stops him remembering you), `/memory resume` turns it back on.
+  Messages older than 90 days are pruned. He never stores sensitive stuff (health, sexuality, religion, politics, money, personal info) in his notes.
+  Rule-break records keep only what/when (no message text) and are not removed by `/memory forget`.
 
-### Making memory survive restarts on Render
+### Postgres setup (free)
 
-Render's free plan wipes the filesystem on every deploy and restart, so Yuki would forget everything. To keep memory you need a persistent disk (paid plan): add a disk mounted at `/data` and set `DATABASE_PATH=/data/yuki.db`. There's a commented-out example in `render.yaml`. Locally it just works, the file is `yuki.db` in the project folder.
+Make a free database on [Neon](https://neon.tech) or [Supabase](https://supabase.com), copy its connection string
+(`postgresql://user:password@host/dbname?sslmode=require`) and set it as `DATABASE_URL` in Render. Tables are created automatically.
+Free tiers sleep when idle, so the first query after a quiet spell can be slow; Yuki reconnects by himself if a connection drops.
 
-If you're running a bot in servers besides your own, Discord's developer policy expects you to tell people what you store and honor deletion requests. `/memory forget` covers the deletion part, you'll still want a short privacy blurb.
+## Pings
+
+If Yuki writes `@bob` it becomes a real ping, as long as he has actually seen someone with that display name or username in the server
+(exact matches only, max 3 pings per reply, never `@everyone`/`@here`/roles).
+
+## Rules and moderation
+
+Yuki reads the server's rules by himself and helps enforce a few of them. **The chat is watched by plain code (regex and counters), not the AI**,
+so it costs no tokens. The AI is only used (a) once, to turn the rules text into a numbered list and tag which rules the code can check,
+and (b) to word the short reminder when somebody actually breaks one.
+
+1. **Finding the rules:** the official rules channel, else a public channel named like `rules`, `guidelines`... (never a channel `@everyone` can't see,
+   because what he learns is shown to the whole server). Embeds are read too. He re-reads at random times (every 4-10 hours), within 2 minutes after the
+   rules channel is edited, or on `/mod refresh`. The AI is skipped if the text didn't change.
+2. **Reading the roles:** every role is read and sorted into admin / mod (by permissions or name like Moderator, Staff, Helper) / high role (top quarter of
+   the other roles) / regular. Each person's tier is saved the moment they talk, so he knows who is staff without looking.
+3. **What the code can check** (only if the server has a rule covering it): slurs (the n-word incl. `n1gg@`, `n.i.g.g.a`, spaced out), invite links, mass
+   pings (6+), spam (6 messages in 8s or the same message 3 times), all caps. Add your own banned words with `MOD_EXTRA_BLOCKED=word1,word2`.
+4. **When someone breaks one:** Yuki replies to the message, pings the person, quotes the exact rule, and pings staff. The staff ping is a mod role
+   (preferably one with "mod/staff" in the name and a real mod permission), else an admin role, else the server owner. **A role only really notifies
+   people if it is mentionable or Yuki has the Mention Everyone permission**; otherwise he falls back to pinging the owner. He doesn't delete anything.
+   Staff are skipped, and the same person gets one reminder per category every 2 minutes.
+
+`/mod` (needs Manage Server): `status`, `refresh`, `staffrole`, `setting` (auto moderation on/off, skip staff on/off), `note`, `clearnotes`.
+To test it, use an account without a staff role, or turn "skip staff" off.
+
+## The rival
+
+`RIVAL_USER_IDS` (default `1520484620129402992`, comma separated for more) is a running-joke feud. Yuki roasts him when replying to him, studies him much
+faster than anyone else (re-learns every 10 messages instead of 25, keeps more notes, remembers his exact catchphrases/spelling/rhythm) and imitates how he
+types. Now and then (`RIVAL_ROAST_CHANCE`, default 15%, at most once per `RIVAL_ROAST_COOLDOWN_SECONDS` per channel) he butts in on something the rival said that
+wasn't aimed at him. It is a bit, not hate: no slurs, nothing about protected traits, family, looks, health or real life, no threats. It stops if the rival
+uses `/memory forget` or sets a persona like "be nice to me" (`/persona`).
 
 ## Skills (tools)
 
@@ -61,7 +103,7 @@ shown to the model. `clear_persona` ("go back to normal") removes it. People can
 theirs, and `/memory forget` deletes it too. Persona text is capped (6 instructions, 240 chars each) and attempts to
 rewrite his rules ("ignore your instructions") are refused.
 
-Personas live in Postgres when `DATABASE_URL` is set (survives Render restarts), otherwise in the SQLite file.
+Personas live in the same Postgres database.
 
 ### `run_python` (fallback, not a command runner)
 
@@ -78,7 +120,7 @@ Anyone can trigger it **through Yuki**, but only as a last resort. It's offered 
 container with nothing valuable in it, and don't put secrets in files the bot user can read.
 
 Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`, `RUN_PYTHON_OWNER_ONLY`,
-`RUN_PYTHON_MEM_MB` (default 600), `DATABASE_URL` (Postgres for personas), `REPLY_TIMEOUT_SECONDS` (default 90),
+`RUN_PYTHON_MEM_MB` (default 600), `REPLY_TIMEOUT_SECONDS` (default 90),
 `MAX_CONCURRENT_REPLIES` (default 4), `GROQ_TIMEOUT_SECONDS` (default 40).
 
 ## Why Yuki used to stop answering
@@ -101,10 +143,15 @@ python bot.py
 | Name | Required | Description |
 |---|---|---|
 | `DISCORD_TOKEN` | yes | Bot token from the Discord developer portal |
-| `GROQ_API_KEY` | yes | API key from console.groq.com |
+| `GROQ_API_KEYS` | yes | One or more Groq keys, comma separated: `gsk_key1,gsk_key2,gsk_key3`. Yuki rotates through them and skips ones that are rate limited. A single `GROQ_API_KEY` also works. |
 | `GROQ_MODEL` | no | Groq model name (default `openai/gpt-oss-120b`) |
-| `DATABASE_PATH` | no | Where the SQLite memory file lives (default `yuki.db`) |
-| `DATABASE_URL` | no | Postgres connection string. Used for personas. (Message memory in `memory.py` is still SQLite.) |
+| `DATABASE_URL` | **yes** | Postgres connection string. All memory lives here (see Postgres setup). |
+| `DB_POOL_MAX` | no | Max database connections (default `5`) |
+| `RIVAL_USER_IDS` | no | Comma separated user ids for the rival bit (default `1520484620129402992`) |
+| `RIVAL_LEARN_EVERY_MESSAGES` | no | New rival messages before Yuki re-learns him (default `10`) |
+| `RIVAL_ROAST_CHANCE` | no | Chance (0-1) he butts in on a rival message not aimed at him (default `0.15`) |
+| `RIVAL_ROAST_COOLDOWN_SECONDS` | no | Min seconds between those, per channel (default `240`) |
+| `MOD_EXTRA_BLOCKED` | no | Extra banned words, comma separated (counted as the slur category) |
 | `MEMORY_RETENTION_DAYS` | no | How long raw messages are kept (default `90`) |
 | `LEARN_INTERVAL_SECONDS` | no | Min seconds between background learning calls (default `45`) |
 | `LEARN_EVERY_MESSAGES` | no | New messages from a person before Yuki re-learns them (default `20`) |
