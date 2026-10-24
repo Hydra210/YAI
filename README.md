@@ -38,8 +38,11 @@ Free tiers sleep when idle, so the first query after a quiet spell can be slow; 
 
 ## Pings
 
-If Yuki writes `@bob` it becomes a real ping, as long as he has actually seen someone with that display name or username in the server
-(exact matches only, max 3 pings per reply, never `@everyone`/`@here`/roles).
+If Yuki writes `@bob` it becomes a real ping (`<@id>`; plain `@bob` text never notifies anyone). He finds the person like this, in order:
+the people in the current chat, then anyone he has ever seen (exact display name or username, or a *unique* partial like `@pat`), then a **live search of the
+server by username/nickname prefix**, which also finds people who never spoke and needs no privileged intent. If several people match he doesn't guess.
+Max 3 pings per reply, never `@everyone`/`@here`/roles. `/mod pingtest name:bob` shows who a name would ping, and the Render logs say
+`ping: ...` when a name was matched or left as text.
 
 ## Rules and moderation
 
@@ -59,7 +62,7 @@ and (b) to word the short reminder when somebody actually breaks one.
    people if it is mentionable or Yuki has the Mention Everyone permission**; otherwise he falls back to pinging the owner. He doesn't delete anything.
    Staff are skipped, and the same person gets one reminder per category every 2 minutes.
 
-`/mod` (needs Manage Server): `status`, `refresh`, `staffrole`, `setting` (auto moderation on/off, skip staff on/off), `note`, `clearnotes`.
+`/mod` (needs Manage Server): `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`.
 To test it, use an account without a staff role, or turn "skip staff" off.
 
 ## The rival

@@ -185,7 +185,8 @@ TOOL_RULES = """Tools:
 - After using tools, reply like always (your voice, or their persona if they have one). Don't dump raw tool output, just say what matters. If they asked for the rules or a list, give them the actual content."""
 
 PING_RULES = """Pinging people:
-- To ping someone, write @ and then their exact display name as it shows in the chat (like @bob). The bot turns it into a real ping. Only do it when it makes sense (someone asked you to, you're calling someone out, you're replying to a third person). Never write @everyone or @here."""
+- You CAN ping people. To ping someone write @ and then their name as it shows in the chat (like @bob). The bot turns it into a real ping, even for people who haven't talked yet (a name or the start of someone's username is enough).
+- If someone asks you to ping, tag or mention a person, do it, don't say you can't. Don't ping people for no reason. Never write @everyone or @here."""
 
 RIVAL_RULES = """RIVAL (running joke): {name} is your sworn enemy in this server. It's a comedy feud, you two are not actually friends.
 - {when}
@@ -358,7 +359,8 @@ async def llm(messages, *, temperature=1.0, max_tokens=1024) -> str:
 
 
 mod = Mod(client, mem, llm, run)
-client.tree.add_command(mod.command_group())
+mod_group = mod.command_group()
+client.tree.add_command(mod_group)
 
 
 async def chat(messages, tools, sctx) -> str:
@@ -465,13 +467,17 @@ def gather(scope, channel_key, msg_id, user_id, text, mentioned_ids, allow=None)
     return recent, "\n".join(parts)[:MEMORY_CHARS]
 
 
-_AT_TOKEN = re.compile(r"(?<![<\w])@([^\s@<>#:,;!?()\[\]{}\"']{2,32})")
+_AT_TOKEN = re.compile(r"(?<![<\w])@([\w.\-]{2,32})")
+_SKIP_PING_WORDS = {"everyone", "here", "yuki"}
+MAX_PINGS = 3
 
 
-def link_mentions(scope: int, text: str, known: dict, limit: int = 3) -> str:
-    """Turn @name in Yuki's reply into real <@id> pings. Only exact matches of people he has actually seen."""
-    pinged = set()
-    for name, uid in sorted(known.items(), key=lambda kv: -len(kv[0])):  # longest first, handles names with spaces
+def link_mentions(scope: int, text: str, known: dict, limit: int = MAX_PINGS):
+    """Turn @name in Yuki's reply into real <@id> pings using people he already knows.
+    Returns (text, words that still need a live lookup). Runs in a worker thread (database)."""
+    pinged, unresolved = set(), []
+    # 1) people from the current chat, longest names first (handles display names with spaces)
+    for name, uid in sorted(known.items(), key=lambda kv: -len(kv[0])):
         if len(pinged) >= limit:
             break
         pat = re.compile(r"(?<![<\w])@" + re.escape(name) + r"(?!\w)", re.IGNORECASE)
@@ -479,17 +485,44 @@ def link_mentions(scope: int, text: str, known: dict, limit: int = 3) -> str:
         if n:
             pinged.add(uid)
 
+    # 2) everyone else he has ever seen: exact display name / username, then a UNIQUE partial match
     def sub(m):
-        word = m.group(1)
-        if word.lower() in ("everyone", "here", "yuki") or len(pinged) >= limit:
+        raw = m.group(1)
+        word = raw.rstrip(".-")
+        tail = raw[len(word):]
+        if len(word) < 2 or word.lower() in _SKIP_PING_WORDS or len(pinged) >= limit:
             return m.group(0)
-        hits = mem.find_user(scope, word, 2, exact=True)
+        hits = mem.find_user(scope, word, 3, exact=True)
+        if not hits and len(word) >= 3:
+            hits = mem.find_user(scope, word, 3)
         if len(hits) == 1:
             pinged.add(hits[0]["user_id"])
-            return f"<@{hits[0]['user_id']}>"
+            return f"<@{hits[0]['user_id']}>{tail}"
+        if word not in unresolved:
+            unresolved.append(word)
         return m.group(0)
 
-    return _AT_TOKEN.sub(sub, text)
+    return _AT_TOKEN.sub(sub, text), unresolved
+
+
+async def resolve_live(guild, text: str, words: list, room: int) -> str:
+    """Ask Discord itself who starts with that name. Works for people who never spoke, and needs no privileged intent
+    (members are searched by username / nickname prefix)."""
+    for word in words[: max(room, 0)]:
+        try:
+            found = await asyncio.wait_for(guild.query_members(query=word[:32], limit=5), timeout=4)
+        except Exception as e:
+            log.info("ping: live lookup for @%s failed (%s)", word, type(e).__name__)
+            continue
+        low = word.lower()
+        exact = [m for m in found if low in {m.display_name.lower(), m.name.lower(), (m.global_name or "").lower()}]
+        pick = exact[0] if len(exact) == 1 else (found[0] if len(found) == 1 else None)
+        if pick is None:
+            log.info("ping: @%s matched %d members, not guessing", word, len(found))
+            continue
+        text = re.sub(r"(?<![<\w])@" + re.escape(word) + r"(?![\w])", f"<@{pick.id}>", text, flags=re.IGNORECASE)
+        log.info("ping: @%s -> %s (%s)", word, pick, pick.id)
+    return text
 
 
 def rival_context(scope: int, rid: int, allow) -> dict:
@@ -647,7 +680,13 @@ async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, menti
             for uid, nm in sctx.mentions.items():
                 known.setdefault(nm.lower(), uid)
         try:
-            reply = await run(link_mentions, scope, reply, known)
+            reply, unresolved = await run(link_mentions, scope, reply, known)
+            if unresolved and sctx is not None and sctx.guild is not None:
+                room = MAX_PINGS - len(set(re.findall(r"<@!?(\d+)>", reply)))
+                reply = await resolve_live(sctx.guild, reply, unresolved, room)
+            left = [w for w in _AT_TOKEN.findall(reply) if w.lower() not in _SKIP_PING_WORDS]
+            if left:
+                log.info("ping: couldn't match %s to anyone, left as plain text", left)
         except Exception:
             log.exception("couldn't turn @names into pings")
     return reply[:5800], (list(sctx.files) if sctx else [])
@@ -981,6 +1020,28 @@ async def yuki_command(interaction: discord.Interaction, question: str, image: d
     await run(mem.add_message, sent.id, scope, channel_key, client.user.id, "yuki", reply, True)
     STATS["replies"] += 1
     STATS["last_reply"] = time.time()
+
+
+@mod_group.command(name="pingtest", description="see who @name would actually ping in this server")
+@app_commands.describe(name="a name or username, with or without the @")
+async def pingtest_command(interaction: discord.Interaction, name: str):
+    if not mod.can_manage(interaction):
+        return await interaction.response.send_message("you need the Manage Server permission for that.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    word = name.strip().lstrip("@")[:32]
+    text, unresolved = await run(link_mentions, interaction.guild_id, f"@{word}", {})
+    how = "someone yuki has already seen"
+    if unresolved:
+        text = await resolve_live(interaction.guild, text, unresolved, MAX_PINGS)
+        how = "a live search of the server (people who never spoke too)"
+    found = re.search(r"<@!?(\d+)>", text)
+    msg = (
+        f"@{word} would ping {text} (id {found.group(1)}), found via {how}."
+        if found else
+        f"@{word} wouldn't ping anyone: nobody matched, or several people did and he won't guess. "
+        "try more of their username or exact display name."
+    )
+    await interaction.followup.send(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 @client.tree.command(name="memory", description="see, wipe or pause what yuki remembers about you")
