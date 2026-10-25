@@ -82,7 +82,8 @@ FALLBACK = {
 TIER_RANK = {"": 0, "high": 1, "mod": 2, "admin": 3, "owner": 4}
 TIER_LABEL = {"owner": "server owner", "admin": "admin", "mod": "mod/staff", "high": "high role"}
 
-DEFAULT_SETTINGS = {"enabled": True, "exempt_staff": True, "slur_fallback": True, "harass_fallback": True, "directed_slurs": True}
+DEFAULT_SETTINGS = {"enabled": True, "exempt_staff": True, "slur_fallback": True, "harass_fallback": True, "directed_slurs": True,
+                    "reactions": True}  # reactions = his random emoji reactions to messages (not the moderation warning reaction)
 
 # The low-severity slurs a server's admins may choose to allow (/mod words allow_slur). It's a short fixed list on purpose: the n-word
 # and every other racial, ethnic or religious slur in the detector can't be allowed by any setting.
@@ -308,6 +309,7 @@ class Mod:
         self._cool_chan: dict[int, float] = {}
         self._hits: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=12))  # (guild, user) -> (time, target) of insults
         self._verdict: dict[int, tuple] = {}  # message id -> (severity, why), handed from detect() to enforce()
+        self._noquote: set[int] = set()  # message ids flagged only because an exempt word was aimed at a person: don't quote a rule
         self._strikes: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=12))
         self._next_rules: dict[int, float] = {}
         self._next_roles: dict[int, float] = {}
@@ -413,6 +415,11 @@ class Mod:
             check.add(getattr(parent, "category_id", None))
         return bool(ids & {c for c in check if c})
 
+    def has_exemptions(self, gid: int) -> bool:
+        """Has staff exempted any rule or word (skiprules, allowed swears, allowed slurs, custom word mode)?"""
+        w = self.words(gid)
+        return bool(self.skipped_entries(gid) or w["allow"] or w["slur_allow"] or w["mode"] == "custom")
+
     def enforced(self, gid: int) -> dict:
         """category -> rule to quote. Categories some rule of this server covers (minus rules the staff told him to skip),
         plus slurs and bullying even if no rule was tagged (cites the closest rule, or a generic 'no slurs or hate speech')."""
@@ -430,12 +437,21 @@ class Mod:
         if "profanity" not in out and self.words(gid)["block"]:  # words the staff blocked by hand are always enforced
             out["profanity"] = GENERIC_RULES["profanity"]
         # a fallback only applies when the server has no rule for that category at all. if the staff skipped the rule, they meant it.
+        # when staff exempted something and this still gets flagged (a swear or allowed slur aimed at a person), no real rule of the
+        # server is the one being broken, so don't pick a "closest" one at random: use the generic wording and don't quote anything.
+        exempt = self.has_exemptions(gid)
         if "slur" not in out and "slur" not in covered and self.settings(gid)["slur_fallback"]:
-            out["slur"] = next((r for r in live if SLUR_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["slur"]
+            if exempt:
+                out["slur"] = {**GENERIC_RULES["slur"], "noquote": True}
+            else:
+                out["slur"] = next((r for r in live if SLUR_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["slur"]
         if "harassment" not in out and "harassment" not in covered and self.settings(gid)["harass_fallback"]:
-            out["harassment"] = (
-                next((r for r in live if HARASS_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["harassment"]
-            )
+            if exempt:
+                out["harassment"] = {**GENERIC_RULES["harassment"], "noquote": True}
+            else:
+                out["harassment"] = (
+                    next((r for r in live if HARASS_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["harassment"]
+                )
         return out
 
     def rule_for(self, gid: int, category: str):
@@ -764,8 +780,13 @@ class Mod:
         text = message.content or ""
 
         cat = None
-        if "slur" in enforced and (self._slur(gid, text) or self._directed_exempt_slur(message, gid, text)):
+        if "slur" in enforced and self._slur(gid, text):
             cat = "slur"
+        elif "slur" in enforced and self._directed_exempt_slur(message, gid, text):
+            cat = "slur"  # an allowed slur, but aimed at a person: still handled, though "no slurs" isn't the rule they broke
+            self._noquote.add(message.id)
+            if len(self._noquote) > 500:
+                self._noquote.clear()
         elif "harassment" in enforced and self._harassment(message, text):
             cat = "harassment"
         elif "profanity" in enforced and self._profane(gid, text):
@@ -837,7 +858,13 @@ class Mod:
             return
         rule = self.rule_for(gid, category)
         if rule is None:
+            self._noquote.discard(message.id)
             return
+        if message.id in self._noquote or rule.get("noquote"):
+            # the rule that would normally cover this is exempt (or an allowed word was just aimed at someone): still step in,
+            # but with generic wording and no quoted rule, so it can't quote a random one
+            self._noquote.discard(message.id)
+            rule = {**GENERIC_RULES.get(category, {"text": "be respectful"}), "n": 0, "noquote": True}
         sev, why = self._verdict.pop(message.id, (2, ""))
         me = guild.me
         perms = channel.permissions_for(me) if me is not None else None
@@ -887,10 +914,10 @@ class Mod:
         reminder = await self._word_it(author.display_name, category, rule, max(times, 1), burst, why, sev)
         ping_text, ping_roles, ping_users = self.staff_ping(guild)
 
-        quote = f"> rule {rule['n']}: {rule['text']}" if rule["n"] else f"> {rule['text']}"
+        quote = None if rule.get("noquote") else (f"> rule {rule['n']}: {rule['text']}" if rule["n"] else f"> {rule['text']}")
         safe_name = discord.utils.escape_mentions(discord.utils.escape_markdown(author.display_name))[:40]
         what = f"that's rule {rule['n']}" if rule["n"] else f"{safe_name} {WHAT_THEY_DID[category]}"
-        lines = [f"{author.mention} {reminder}", quote]
+        lines = [f"{author.mention} {reminder}"] + ([quote] if quote else [])
         if ping_text:
             more = f", {burst}x in the last minute" if burst >= 3 else ""
             lines.append(f"{ping_text} heads up, {what} ({max(times, 1)}x today{more}{', serious' if sev >= 3 else ''})")
@@ -1007,6 +1034,7 @@ class Mod:
             lines = [
                 f"**moderation:** {'on' if st['enabled'] else 'off'} (staff exempt: {'yes' if st['exempt_staff'] else 'no'}, "
                 f"slurs always checked: {'yes' if st['slur_fallback'] else 'no'}, bullying always checked: {'yes' if st['harass_fallback'] else 'no'})",
+                f"**emoji reactions:** {'on' if st['reactions'] else 'off'} (`/mod setting`)",
                 f"**rules:** {len(rules)} read" + (f" from #{meta['channel']}" if meta.get("channel") else " (no rules channel found)"),
                 "**auto-checked:** " + (", ".join(f"{c} (rule {r['n']})" for c, r in enforced.items()) or "nothing"),
                 f"**staff ping:** {ping_text or 'nobody pingable'}",
@@ -1064,7 +1092,7 @@ class Mod:
             await i.response.send_message(f"ok, i'll ping {role.mention} when rules get broken.{extra}", ephemeral=True,
                                           allowed_mentions=discord.AllowedMentions.none())
 
-        @group.command(name="setting", description="turn parts of the auto moderation on or off")
+        @group.command(name="setting", description="turn parts of yuki's moderation, or his emoji reactions, on or off")
         @app_commands.describe(name="what to change", value="on or off")
         @app_commands.choices(
             name=[
@@ -1073,6 +1101,7 @@ class Mod:
                 app_commands.Choice(name="always check slurs even with no matching rule (slur_fallback)", value="slur_fallback"),
                 app_commands.Choice(name="always check bullying/insults even with no matching rule (harass_fallback)", value="harass_fallback"),
                 app_commands.Choice(name="still flag allowed slurs when aimed at a person (directed_slurs)", value="directed_slurs"),
+                app_commands.Choice(name="random emoji reactions to messages (reactions)", value="reactions"),
             ],
             value=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")],
         )
@@ -1140,6 +1169,10 @@ class Mod:
                         f"- {c}: NOT enforced: you told me to skip rule {', '.join(map(str, sk))} (`/mod skiprules`)"
                         if sk else f"- {c}: NOT enforced: no rule in this server covers it"
                     )
+                    continue
+                if r.get("noquote"):
+                    lines.append(f"- {c}: would step in with a reminder but quote no rule (the rule that normally covers it is exempt)"
+                                 + (f"; {notes[c]}" if c in notes else ""))
                     continue
                 quote = f"rule {r['n']}: {r['text']}" if r["n"] else r["text"]
                 lines.append(f"- {c}: would enforce, quoting {quote}" + (f"; {notes[c]}" if c in notes else ""))

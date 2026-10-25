@@ -12,12 +12,31 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.15.0.0"
+VERSION = "1.15.1.0"
 VERSION_DATE = "2026-10-25"
-VERSION_NOTE = "channels yuki never moderates, better statuses, search that doesn't get blocked, and this update log"
+VERSION_NOTE = "staff can turn his random emoji reactions off, plus no more random rule quotes"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {
+        "version": "1.15.1.0",
+        "date": "2026-10-25",
+        "title": "emoji reactions switch",
+        "changes": [
+            "staff can turn his random emoji reactions off (or back on) for their server with `/mod setting` > reactions. "
+            "his ⚠️ warning reaction on rule breaks is separate and stays.",
+        ],
+    },
+    {
+        "version": "1.15.0.1",
+        "date": "2026-10-25",
+        "title": "no more random rule quotes",
+        "changes": [
+            "when staff exempt a rule or a word (`/mod skiprules`, `/mod words`) he still steps in if it's aimed at a person, "
+            "but he no longer quotes a rule for it. before, he'd grab whatever rule looked closest, which was often a random one.",
+            "real rules are still quoted as normal when the server actually has a matching rule that isn't exempt.",
+        ],
+    },
     {
         "version": "1.15.0.0",
         "date": "2026-10-25",
@@ -53,7 +72,7 @@ CHANGELOG = [
 ABOUT = {
     "overview": (
         "yuki is a lazy, sarcastic discord bot that uses ai for everything. he reads a lot of what's said in a server, remembers it, "
-        "and has real tools for looking stuff up. people can @mention him, use /yuki, dm him, or start a message with 'yuki'."
+        "and has real tools for looking stuff up. now and then he reacts to a message with an emoji (staff can turn that off with `/mod setting`). people can @mention him, use /yuki, dm him, or start a message with 'yuki'."
     ),
     "talk": (
         "ways to talk to him: @mention him in a server, `/yuki question: ...`, dm him (he answers every dm), or start a message with 'yuki'. "

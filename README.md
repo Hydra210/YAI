@@ -81,6 +81,10 @@ skipped completely: no checks, no reminders, no staff pings, and nothing counts 
 channel inside it, and threads / forum posts inside a listed channel are skipped too. Up to 50 per server, saved in Postgres, and `/mod status` shows them.
 He still reads and remembers messages there and still answers people who talk to him; only the rule enforcement is off.
 
+**When a rule or word is exempt but it's aimed at a person:** swearing or an allowed slur pointed at someone is still handled as bullying, but if the
+rule that would normally cover it is exempt, he gives the reminder and pings staff **without quoting any rule** (so he can't quote a random one).
+A real, non-exempt rule that matches is still quoted. `/mod test` shows which case you're in.
+
 **Rules he shouldn't enforce (`/mod skiprules`):** shows a dropdown with every rule he read from the rules channel (and what each one checks).
 Pick the ones he should leave alone and close the dropdown to save; "enforce everything again" clears it. He still knows the rules (he can
 answer questions about them), he just won't police them. If you skip a rule, the built-in fallback for that category (slurs, bullying) doesn't
@@ -192,6 +196,8 @@ model (`GROQ_VISION_MODEL`, default `meta-llama/llama-4-scout-17b-16e-instruct`)
 `REACT_CHANCE` (default `0.2` per message, `0` turns it off), `REACT_COOLDOWN_SECONDS` (default 20 per channel) and
 `REACT_USE_AI` (`1` = the model picks the emoji with a tiny call, `0` = keyword rules only, zero tokens). He needs the
 Add Reactions and Read Message History permissions; without them he skips (the logs say so).
+
+**Turn them off per server:** staff run `/mod setting` > *random emoji reactions (reactions)* > off. The ⚠️ warning reaction on rule breaks is separate.
 
 Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`, `RUN_PYTHON_OWNER_ONLY`,
 `RUN_PYTHON_MEM_MB` (default 600), `REPLY_TIMEOUT_SECONDS` (default 90),

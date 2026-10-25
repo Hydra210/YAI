@@ -1246,6 +1246,8 @@ def maybe_react(message: discord.Message) -> None:
     """Now and then he reacts to a message that wasn't for him. Code decides when, the model (or keyword rules) picks the emoji."""
     if REACT_CHANCE <= 0 or message.guild is None or message.author.id in mem.optouts:
         return
+    if not mod.settings(message.guild.id).get("reactions", True):  # staff turned his emoji reactions off here (/mod setting)
+        return
     has_image = any(skills.is_image(a) for a in message.attachments)
     if len(message.content.strip()) < 4 and not has_image:
         return
