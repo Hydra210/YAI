@@ -377,10 +377,35 @@ async def llm(messages, *, temperature=1.0, max_tokens=1024) -> str:
 
 
 FALLBACK_STATUSES = [
-    "staring at the ceiling", "lowkey hungry", "pretending to work", "doomscrolling",
-    "touching grass (briefly)", "thinking about nothing", "buffering...", "vibing ngl",
-    "ignoring my responsibilities", "one more video then sleep", "napping with my eyes open",
-    "arguing with myself", "rotting", "mentally elsewhere",
+    # the old "doomscrolling" energy: deadpan, lazy, tiny. add your own, one per line.
+    "doomscrolling", "staring at the ceiling", "lowkey hungry", "pretending to work", "touching grass (briefly)",
+    "thinking about nothing", "buffering...", "vibing ngl", "ignoring my responsibilities", "one more video then sleep",
+    "napping with my eyes open", "arguing with myself", "rotting", "mentally elsewhere",
+    "refreshing the same app", "should be asleep", "reading the terms and conditions (lying)", "eating cereal at 3am",
+    "avoiding a text", "watching a 4 hour video essay", "loading personality...", "out of spoons",
+    "opening the fridge again", "scrolling with no goal", "pretending i have a schedule", "lying on the floor",
+    "rewatching the same show", "one tab away from a breakdown", "staring at the wall, winning", "doing nothing professionally",
+    "answering emails (not really)", "losing to a bot in a game", "reorganizing my 400 tabs", "has not eaten since tuesday",
+    "waiting for motivation", "drinking my 4th energy drink", "sitting in the dark", "pretending to be productive",
+    "hiding from my problems", "thinking about that thing i said in 2019", "i was about to do something", "do not disturb (disturb me)",
+    "watching ads on purpose", "alt tabbing nonstop", "forgot what i was doing", "built different (tired)",
+    "wasting electricity", "overthinking a one word reply", "listening to the same song 40 times", "on hold with myself",
+    "trying to remember a dream", "losing a staring contest to my phone", "lowkey crashing out", "not dead just offline",
+    "checking if anyone texted (no)", "being a menace quietly", "touching my phone instead of grass", "pretending to listen",
+    "soaking in the silence", "contemplating a nap", "making questionable choices", "ten minutes late to my own life",
+    "microwaving the same coffee", "reading comments i shouldn't", "currently unavailable emotionally", "running on 2 hours of sleep",
+    "bored, send help", "mid thought, bear with me", "avoiding chores", "tomorrow's problem", "doom scrolling again, sorry",
+    "chewing on ice", "looking for my keys (in hand)", "pondering a snack", "acting like i understand", "running out of battery",
+    "rotting in bed", "the vibes are off", "a little unwell, mentally", "chilling in the void", "going through it",
+    "one sec (it was an hour)", "turning it off and on again", "bargaining with my alarm", "ghosting my own plans",
+    "pretending the deadline isn't real", "being weird in a corner", "typing and deleting", "saving it for later (never)",
+    "mildly inconvenienced", "who needs sleep", "standing in the kitchen for no reason", "unreasonably tired",
+    "re-reading old messages", "checking the weather inside", "thinking about food again", "buffering my feelings",
+    "lowkey thriving (no)", "respectfully, no", "simply existing", "somewhere between awake and asleep",
+    "letting the group chat rot", "making a face at nothing", "waiting for a notification", "ignoring the dishes",
+    "doing the bare minimum", "locked in (not really)", "peaking in my mind", "my brain is a 404", "gaming instead of sleeping",
+    "swiping on nothing", "ordering food i can't afford", "lowkey fighting a battle", "on a break from my break",
+    "stuck in a loop", "being a tiny gremlin", "pretending to care", "yawning at 4pm", "dreaming of nothing",
 ]
 presence = {"last_talked": time.time(), "text": None, "changed_at": 0.0, "state": None, "recent": []}
 
@@ -390,31 +415,45 @@ def mark_talked() -> None:
     presence["last_talked"] = time.time()
 
 
+STATUS_AI_CHANCE = float(os.getenv("STATUS_AI_CHANCE", "0.15"))  # 0 = only the hand-written list above
+
+
+def curated_status() -> str:
+    recent = presence["recent"][-40:]
+    choices = [x for x in FALLBACK_STATUSES if x not in recent] or FALLBACK_STATUSES
+    return random.choice(choices)
+
+
 async def pick_status() -> str:
-    avoid = ", ".join(presence["recent"][-6:]) or "none yet"
+    # mostly the hand-written list (that's where the good ones come from). now and then the model riffs on it.
+    if random.random() >= STATUS_AI_CHANCE:
+        return curated_status()
+    avoid = ", ".join(presence["recent"][-10:]) or "none yet"
+    examples = "\n".join(random.sample(FALLBACK_STATUSES, 10))
     try:
         raw = await llm(
             [
-                {"role": "system", "content": "You write the custom Discord status for Yuki, a lazy, sarcastic, chaotic Gen Z Discord bot. Reply with ONLY the status text, nothing else."},
+                {"role": "system", "content": "You write the custom Discord status for Yuki, a lazy, deadpan Discord bot. Reply with ONLY the status text, nothing else."},
                 {
                     "role": "user",
                     "content": (
-                        "pick a random status for yourself right now, whatever you feel like. could be a mood, a fake activity, "
-                        "a dumb thought, a tiny joke. lowercase, casual, under 50 characters, no quotes, no hashtags, at most one emoji (usually none). "
-                        f"don't repeat these recent ones: {avoid}. random seed for variety: {random.randint(1000, 9999)}"
+                        "write ONE new status in exactly the style of these. tiny, deadpan, a bored person doing nothing or a relatable lazy thought:\n"
+                        f"{examples}\n\n"
+                        "rules: lowercase, under 40 characters, no emojis, no hashtags, no quotes, no exclamation marks, no 'bot' or 'ai' jokes, "
+                        "no trying to be funny or quirky or random, not a catchphrase, nothing cringe. it should read like a real person's status. "
+                        f"don't reuse or closely copy these: {avoid}"
                     ),
                 },
             ],
-            temperature=1.3,
-            max_tokens=250,
+            temperature=1.0,
+            max_tokens=60,
         )
         text = (raw.splitlines() or [""])[0].strip().strip("\"'`").strip()
-        if 2 <= len(text) <= 100:
+        if 2 <= len(text) <= 60 and text not in presence["recent"] and "!" not in text:
             return text
     except Exception:
-        log.exception("couldn't get a status from the model, using a fallback")
-    choices = [x for x in FALLBACK_STATUSES if x not in presence["recent"]] or FALLBACK_STATUSES
-    return random.choice(choices)
+        log.exception("couldn't get a status from the model, using the list")
+    return curated_status()
 
 
 async def presence_loop():
