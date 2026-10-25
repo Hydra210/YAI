@@ -74,7 +74,19 @@ and (b) to word the short reminder when somebody actually breaks one.
    people if it is mentionable or Yuki has the Mention Everyone permission**; otherwise he falls back to pinging the owner. He doesn't delete anything.
    Staff are skipped, and the same person gets one reminder per category every 2 minutes.
 
-`/mod` (needs Manage Server): `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`.
+`/mod`: `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`, plus `access` and `words` (below).
+
+**Who can use `/mod`:** by default the server owner, Administrators and anyone with Manage Server (and the bot's `OWNER_ID`, in any server).
+Staff can change that with `/mod access`: `level` (Manage Server / only Administrators / only the owner), `allow_role` / `remove_role`,
+`allow_user` / `remove_user`, `show`. People you add by role or user can use every `/mod` command except `/mod access` itself, which only
+the server owner or an Administrator can change, so a delegate can't hand out access. The `/mod` commands are visible to everyone in the
+command list (so the people you add can see them) but anyone without access gets a "no access" message.
+
+**Swear filter exceptions (`/mod words`):** `allow <word>` makes an exception (say swearing is banned but `shit` is fine), `block <word>` blocks
+a specific word even when no rule mentions swearing, `mode` switches between "built-in list plus my words" and "ONLY my blocked words",
+plus `remove`, `list`, `clear`. Words match with repeated letters and simple number swaps (`shiiit`, `sh1t`) and only as whole words
+(`hell` won't match `hello`). Exceptions only loosen the built-in swear list: they are refused for slurs, and insults aimed at people
+(bullying) are still checked. `/mod test` uses the server's lists, so you can try a message before trusting it.
 To test it, use an account without a staff role, or turn "skip staff" off.
 
 ## The rival
@@ -139,14 +151,16 @@ container with nothing valuable in it, and don't put secrets in files the bot us
 blocked now and then. For reliable search set `TAVILY_API_KEY` (free tier at tavily.com) and he'll use that instead.
 Per person: 8 searches per 10 minutes (owner exempt). Results are treated as untrusted text.
 
-**Memes and seeing images:** `make_meme` draws the text with Pillow (font: Anton, bundled in `fonts/`, OFL licensed, so
+**Memes and seeing images:** `/meme` (image, top, bottom, style) works without the model at all. "yuki caption this ..." and "yuki rate this" force the right tool so he can't just claim he did it.
+
+**Memes, continued:** `make_meme` draws the text with Pillow (font: Anton, bundled in `fonts/`, OFL licensed, so
 keep that folder in the repo). It works on gifs too. `look_at_image` sends a downscaled copy of the picture to a Groq vision
 model (`GROQ_VISION_MODEL`, default `meta-llama/llama-4-scout-17b-16e-instruct`) so he can actually rate or roast it.
 
 **Emoji reactions:** now and then he reacts to a message that wasn't aimed at him, no reply, nothing sent. Tune with
-`REACT_CHANCE` (default `0.07` per message, `0` turns it off), `REACT_COOLDOWN_SECONDS` (default 40 per channel) and
+`REACT_CHANCE` (default `0.2` per message, `0` turns it off), `REACT_COOLDOWN_SECONDS` (default 20 per channel) and
 `REACT_USE_AI` (`1` = the model picks the emoji with a tiny call, `0` = keyword rules only, zero tokens). He needs the
-Add Reactions and Read Message History permissions; without them he just skips.
+Add Reactions and Read Message History permissions; without them he skips (the logs say so).
 
 Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`, `RUN_PYTHON_OWNER_ONLY`,
 `RUN_PYTHON_MEM_MB` (default 600), `REPLY_TIMEOUT_SECONDS` (default 90),
