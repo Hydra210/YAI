@@ -53,8 +53,8 @@ RIVAL_LEARN_EVERY = int(os.getenv("RIVAL_LEARN_EVERY_MESSAGES", "10"))  # re-lea
 ROAST_CHANCE = float(os.getenv("RIVAL_ROAST_CHANCE", "0.15"))  # odds Yuki butts in on a message of his that wasn't for him
 ROAST_COOLDOWN = int(os.getenv("RIVAL_ROAST_COOLDOWN_SECONDS", "240"))  # per channel
 
-# presence: random custom status every STATUS_INTERVAL minutes, goes idle after IDLE_AFTER minutes of nobody talking to him
-STATUS_INTERVAL = int(os.getenv("STATUS_INTERVAL_MINUTES", "30")) * 60
+# presence: random custom status every STATUS_INTERVAL_MINUTES (default 5), goes idle after IDLE_AFTER minutes of nobody talking to him
+STATUS_INTERVAL = int(os.getenv("STATUS_INTERVAL_MINUTES", "5")) * 60
 IDLE_AFTER = int(os.getenv("IDLE_AFTER_MINUTES", "5")) * 60
 
 CREATOR = "Patrick"
