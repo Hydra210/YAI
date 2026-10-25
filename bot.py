@@ -21,6 +21,7 @@ from groq import (
     RateLimitError,
 )
 
+import about
 import skills
 from memory import Memory
 from moderation import TIER_LABEL, Mod
@@ -263,6 +264,7 @@ async def start_web_server():
     async def status(_request):
         now = time.time()
         return web.json_response({
+            "version": about.VERSION,
             "ready": client.is_ready(),
             "latency_ms": None if client.latency != client.latency else round(client.latency * 1000),
             "uptime_s": round(now - STATS["started"]),
@@ -1425,11 +1427,38 @@ async def persona_command(interaction: discord.Interaction, action: app_commands
     await interaction.followup.send(msg[:1900], ephemeral=True)
 
 
+@client.tree.command(name="about", description="see what's new, what yuki can do, or his version")
+@app_commands.describe(topic="what to show")
+@app_commands.choices(
+    topic=[
+        app_commands.Choice(name="what's new (update log)", value="new"),
+        app_commands.Choice(name="what yuki can do", value="tour"),
+        app_commands.Choice(name="commands and how to talk to him", value="talk"),
+        app_commands.Choice(name="moderation", value="moderation"),
+        app_commands.Choice(name="memory and privacy", value="memory"),
+        app_commands.Choice(name="version", value="version"),
+    ]
+)
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+async def about_command(interaction: discord.Interaction, topic: app_commands.Choice[str] | None = None):
+    t = topic.value if topic else "new"
+    if t == "new":
+        msg = about.format_changelog(3)
+    elif t == "tour":
+        msg = about.about_text()
+    elif t == "version":
+        msg = about.version_line()
+    else:
+        msg = about.about_text(t)
+    await interaction.response.send_message(msg[:1900], ephemeral=True)
+
+
 @client.event
 async def on_ready():
     presence["state"] = None  # re-send the activity after every (re)connect
     log.info("reactions: chance %.2f, cooldown %ss, %s", REACT_CHANCE, REACT_COOLDOWN, "model picks the emoji" if REACT_USE_AI else "keyword rules")
-    log.info("logged in as %s (yuki is awake. barely.) using model %s", client.user, MODEL)
+    log.info("logged in as %s (yuki is awake. barely.) using model %s, version %s", client.user, MODEL, about.VERSION)
 
 
 @client.event

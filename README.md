@@ -114,6 +114,16 @@ types. Now and then (`RIVAL_ROAST_CHANCE`, default 15%, at most once per `RIVAL_
 wasn't aimed at him. It is a bit, not hate: no slurs, nothing about protected traits, family, looks, health or real life, no threats. It stops if the rival
 uses `/memory forget` or sets a persona like "be nice to me" (`/persona`).
 
+## Update log, version and "what can you do"
+
+Everything Yuki knows about himself lives in `about.py`: the `VERSION`, a one-line `VERSION_NOTE`, the `CHANGELOG` and short `ABOUT` notes
+(talking to him, memory, moderation, tools, personas, privacy, limits). Two tools read it: `whats_new` ("what's new", "any updates", "what version are you")
+and `about_yuki` ("what can you do", "what are your commands"). He puts it in his own words, and he only claims what is written there. Anyone can also use
+`/about` (what's new, what he can do, commands, moderation, memory, version). The version also shows in the startup log and at `/status`.
+
+**When you ship something:** bump `VERSION` / `VERSION_DATE` / `VERSION_NOTE` and add a new entry at the **top** of `CHANGELOG` in `about.py`.
+If you add a feature, add a line to the matching `ABOUT` note too, or he won't know to mention it.
+
 ## Skills (tools)
 
 Yuki doesn't do the work himself. The bot's Python code (`skills.py`) does the lookups and file work, and Yuki
@@ -164,8 +174,12 @@ Anyone can trigger it **through Yuki**, but only as a last resort. It's offered 
 **This is still not a real sandbox.** A Python-level policy can be beaten by someone determined. Run the bot in a
 container with nothing valuable in it, and don't put secrets in files the bot user can read.
 
-**Web search:** works with no setup (it reads DuckDuckGo's plain results page), but datacenter IPs like Render's can get
-blocked now and then. For reliable search set `TAVILY_API_KEY` (free tier at tavily.com) and he'll use that instead.
+**Web search:** works with no setup, but datacenter IPs like Render's get blocked by DuckDuckGo (that's the "403" he talks about).
+He tries each source in order and moves on when one is blocked: Google via Serper (`SERPER_API_KEY`), Tavily (`TAVILY_API_KEY`),
+Brave (`BRAVE_API_KEY`), SearXNG (`SEARXNG_URL`) for whichever of those you set, then DuckDuckGo, DuckDuckGo Lite, then Wikipedia
+(facts only, not news). The Render logs say which one failed (`search backend ... failed`). For reliable search set `TAVILY_API_KEY`
+(free tier at tavily.com). `fetch_url` now sends browser-like headers and retries with another identity on a 403/429; some sites still block
+bots outright and he'll say so.
 Per person: 8 searches per 10 minutes (owner exempt). Results are treated as untrusted text.
 
 **Memes and seeing images:** `/meme` (image, top, bottom, style) works without the model at all. "yuki caption this ..." and "yuki rate this" force the right tool so he can't just claim he did it.
