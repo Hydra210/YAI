@@ -74,7 +74,13 @@ and (b) to word the short reminder when somebody actually breaks one.
    people if it is mentionable or Yuki has the Mention Everyone permission**; otherwise he falls back to pinging the owner. He doesn't delete anything.
    Staff are skipped, and the same person gets one reminder per category every 2 minutes.
 
-`/mod`: `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`, plus `access` and `words` (below).
+`/mod`: `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`, `skiprules`, plus `access` and `words` (below).
+
+**Rules he shouldn't enforce (`/mod skiprules`):** shows a dropdown with every rule he read from the rules channel (and what each one checks).
+Pick the ones he should leave alone and close the dropdown to save; "enforce everything again" clears it. He still knows the rules (he can
+answer questions about them), he just won't police them. If you skip a rule, the built-in fallback for that category (slurs, bullying) doesn't
+come back either, since you chose that. Words blocked by hand with `/mod words block` are still enforced. Skips are matched by the rule's wording,
+so they survive the rules being re-read; if the rules channel is rewritten a lot you may need to pick again (`/mod status` shows how many are skipped).
 
 **Who can use `/mod`:** by default the server owner, Administrators and anyone with Manage Server (and the bot's `OWNER_ID`, in any server).
 Staff can change that with `/mod access`: `level` (Manage Server / only Administrators / only the owner), `allow_role` / `remove_role`,

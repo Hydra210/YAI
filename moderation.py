@@ -13,6 +13,7 @@ How it works, and where the AI is (and isn't) used:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import functools
 import hashlib
 import json
@@ -46,6 +47,11 @@ CATEGORIES = {
     "mass_mention": "mass pinging or mention spam",
     "spam": "spamming, flooding the chat, repeating the same message",
     "caps": "excessive capital letters or shouting",
+}
+
+CATEGORY_LABEL = {
+    "slur": "slurs / hate speech", "harassment": "bullying / insults", "profanity": "swearing", "links": "links",
+    "personal_info": "personal info", "invites": "invites / ads", "mass_mention": "mass pings", "spam": "spam", "caps": "all caps",
 }
 
 # short, neutral wording for the reminder prompt (never contains the offending words themselves)
@@ -220,6 +226,73 @@ def parse_json(raw: str):
     return data if isinstance(data, dict) else None
 
 
+class SkipRulesView(discord.ui.View):
+    """A dropdown of the server's rules. The ones picked are the rules Yuki won't enforce."""
+
+    def __init__(self, mod: "Mod", user_id: int, gid: int, rules: list, entries: list):
+        super().__init__(timeout=300)
+        self.mod, self.user_id, self.gid, self.rules = mod, user_id, gid, rules[:25]
+        self.chosen = {idx for idx, r in enumerate(self.rules) if entries and mod._is_skipped(r, entries)}
+        options = []
+        for idx, r in enumerate(self.rules):
+            cat = r.get("category")
+            options.append(
+                discord.SelectOption(
+                    label=f"{r['n']}. {r['text']}"[:100],
+                    value=str(idx),
+                    description=(f"checks: {CATEGORY_LABEL[cat]}" if cat in CATEGORY_LABEL else "not auto-checked anyway")[:100],
+                    default=idx in self.chosen,
+                )
+            )
+        self.select = discord.ui.Select(
+            placeholder="pick the rules yuki should NOT enforce", min_values=0, max_values=len(options), options=options
+        )
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+        reset = discord.ui.Button(label="enforce everything again", style=discord.ButtonStyle.secondary)
+        reset.callback = self.on_reset
+        self.add_item(reset)
+
+    def summary(self) -> str:
+        picked = [self.rules[i] for i in sorted(self.chosen)]
+        if not picked:
+            return ("yuki enforces every rule he can check. pick the ones he should leave alone, "
+                    "then close the dropdown to save.")
+        lines = ["**yuki is NOT enforcing:**"]
+        for r in picked:
+            cat = r.get("category")
+            lines.append(f"- rule {r['n']}: {r['text'][:80]}" + (f" ({CATEGORY_LABEL[cat]})" if cat in CATEGORY_LABEL else ""))
+        lines.append("he still knows these rules, he just won't police them. everything else is enforced like before.")
+        if any(r.get("category") == "profanity" for r in picked) and self.mod.words(self.gid)["block"]:
+            lines.append("words you blocked by hand (`/mod words`) are still enforced.")
+        return "\n".join(lines)[:1900]
+
+    async def interaction_check(self, i: discord.Interaction) -> bool:
+        if i.user.id != self.user_id or not self.mod.can_manage(i):
+            await i.response.send_message("that menu isn't yours. run `/mod skiprules` yourself.", ephemeral=True)
+            return False
+        return True
+
+    async def _save(self):
+        entries = [{"n": self.rules[i]["n"], "text": self.rules[i]["text"]} for i in sorted(self.chosen)]
+        if entries:
+            await self.mod.run(self.mod.mem.fast_set, self.gid, "skipped_rules", entries)
+        else:
+            await self.mod.run(self.mod.mem.fast_delete, self.gid, "skipped_rules")
+        for idx, opt in enumerate(self.select.options):
+            opt.default = idx in self.chosen
+
+    async def on_select(self, i: discord.Interaction):
+        self.chosen = {int(v) for v in self.select.values}
+        await self._save()
+        await i.response.edit_message(content=self.summary(), view=self)
+
+    async def on_reset(self, i: discord.Interaction):
+        self.chosen = set()
+        await self._save()
+        await i.response.edit_message(content=self.summary(), view=self)
+
+
 class Mod:
     def __init__(self, client: discord.Client, mem, llm, run):
         """llm(messages, temperature=, max_tokens=) -> str ; run(fn, *args) -> awaitable (to_thread)."""
@@ -266,22 +339,49 @@ class Mod:
         level = a.get("level") if a.get("level") in ACCESS_LEVELS else "manage_server"
         return {"level": level, "roles": list(a.get("roles") or []), "users": list(a.get("users") or [])}
 
+    def skipped_entries(self, gid: int) -> list:
+        return list(self.mem.fast_get(gid, "skipped_rules") or [])
+
+    @staticmethod
+    def _norm_rule(t: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+
+    def _is_skipped(self, rule: dict, entries: list) -> bool:
+        """Is this rule on the staff's 'don't enforce' list? Matched by wording (rule numbers shift when rules are re-read),
+        or by same number plus mostly the same wording (the ai rephrases a little when it re-reads the channel)."""
+        t = self._norm_rule(rule.get("text", ""))
+        for e in entries:
+            et = self._norm_rule(e.get("text", ""))
+            if t == et or (e.get("n") == rule.get("n") and difflib.SequenceMatcher(None, t, et).ratio() >= 0.6):
+                return True
+        return False
+
+    def skipped_in_category(self, gid: int, category: str) -> list:
+        entries = self.skipped_entries(gid)
+        return [r["n"] for r in self.rules(gid) if r.get("category") == category and entries and self._is_skipped(r, entries)]
+
     def enforced(self, gid: int) -> dict:
-        """category -> rule to quote. Categories some rule of this server covers, plus slurs even if no rule was tagged
-        (cites the closest rule, e.g. 'be respectful', or a generic 'no slurs or hate speech')."""
-        out = {}
+        """category -> rule to quote. Categories some rule of this server covers (minus rules the staff told him to skip),
+        plus slurs and bullying even if no rule was tagged (cites the closest rule, or a generic 'no slurs or hate speech')."""
+        out, covered = {}, set()
         rules = self.rules(gid)
+        skipped = self.skipped_entries(gid)
+        live = [r for r in rules if not (skipped and self._is_skipped(r, skipped))]
         for r in rules:
+            if r.get("category") in CATEGORIES:
+                covered.add(r["category"])
+        for r in live:
             c = r.get("category")
             if c in CATEGORIES and c not in out:
                 out[c] = r
-        if "profanity" not in out and self.words(gid)["block"]:  # the staff added blocked words, so enforce them
+        if "profanity" not in out and self.words(gid)["block"]:  # words the staff blocked by hand are always enforced
             out["profanity"] = GENERIC_RULES["profanity"]
-        if "slur" not in out and self.settings(gid)["slur_fallback"]:
-            out["slur"] = next((r for r in rules if SLUR_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["slur"]
-        if "harassment" not in out and self.settings(gid)["harass_fallback"]:
+        # a fallback only applies when the server has no rule for that category at all. if the staff skipped the rule, they meant it.
+        if "slur" not in out and "slur" not in covered and self.settings(gid)["slur_fallback"]:
+            out["slur"] = next((r for r in live if SLUR_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["slur"]
+        if "harassment" not in out and "harassment" not in covered and self.settings(gid)["harass_fallback"]:
             out["harassment"] = (
-                next((r for r in rules if HARASS_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["harassment"]
+                next((r for r in live if HARASS_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["harassment"]
             )
         return out
 
@@ -537,6 +637,9 @@ class Mod:
         high = [e["name"] for e in roles if e["tier"] == "high"][:8]
         if staff or high:
             lines.append(f"- staff roles: {', '.join(staff) or 'unknown'}; other high roles: {', '.join(high) or 'none'}")
+        skipped_nums = [str(r["n"]) for r in rules if f.get("skipped_rules") and self._is_skipped(r, f["skipped_rules"])]
+        if skipped_nums:
+            lines.append("- rules the staff told you NOT to enforce (you still know them, you just don't police them): " + ", ".join(skipped_nums))
         allowed_words = (f.get("words") or {}).get("allow") or []
         if allowed_words:
             lines.append("- words the staff explicitly allow here even though swearing is restricted: " + ", ".join(allowed_words[:12]))
@@ -852,6 +955,8 @@ class Mod:
                 f"**staff ping:** {ping_text or 'nobody pingable'}",
                 f"**roles:** {sum(1 for r in roles if r['tier'] in ('admin', 'mod'))} staff, {sum(1 for r in roles if r['tier'] == 'high')} high",
                 f"**notes:** {len(mod.mem.fast_get(g.id, 'notes') or [])}",
+                *([f"**skipped rules:** {sum(1 for r in rules if mod._is_skipped(r, mod.skipped_entries(g.id)))} (`/mod skiprules`)"]
+                  if mod.skipped_entries(g.id) else []),
                 f"**who can use /mod:** {ACCESS_LEVELS[mod.access(g.id)['level']]}"
                 + (f", plus {len(mod.access(g.id)['roles'])} role(s) and {len(mod.access(g.id)['users'])} user(s) you added" if mod.access(g.id)["roles"] or mod.access(g.id)["users"] else ""),
                 f"**swear filter:** {'only your blocked words' if mod.words(g.id)['mode'] == 'custom' else 'built-in list'}"
@@ -918,6 +1023,17 @@ class Mod:
             await mod.run(mod.mem.fast_set, i.guild.id, "settings", st)
             await i.response.send_message(f"{name.value} is now {value.value}.", ephemeral=True)
 
+        @group.command(name="skiprules", description="pick which of the server's rules yuki should NOT enforce")
+        async def skiprules(i: discord.Interaction):
+            if not allowed(i):
+                return await deny(i)
+            rules = mod.rules(i.guild.id)
+            if not rules:
+                return await i.response.send_message(
+                    "i haven't read any rules yet. run `/mod refresh` first (or the rules channel isn't visible to @everyone).", ephemeral=True)
+            view = SkipRulesView(mod, i.user.id, i.guild.id, rules, mod.skipped_entries(i.guild.id))
+            await i.response.send_message(view.summary(), view=view, ephemeral=True)
+
         @group.command(name="test", description="see what yuki would do if a regular member posted this text (nothing is sent)")
         @app_commands.describe(text="the message to check", aimed_at_someone="pretend it mentions or replies to another member")
         async def test(i: discord.Interaction, text: str, aimed_at_someone: bool = False):
@@ -951,7 +1067,11 @@ class Mod:
             for c in found:
                 r = enforced.get(c)
                 if not r:
-                    lines.append(f"- {c}: NOT enforced: no rule in this server covers it")
+                    sk = mod.skipped_in_category(g.id, c)
+                    lines.append(
+                        f"- {c}: NOT enforced: you told me to skip rule {', '.join(map(str, sk))} (`/mod skiprules`)"
+                        if sk else f"- {c}: NOT enforced: no rule in this server covers it"
+                    )
                     continue
                 quote = f"rule {r['n']}: {r['text']}" if r["n"] else r["text"]
                 lines.append(f"- {c}: would enforce, quoting {quote}" + (f"; {notes[c]}" if c in notes else ""))
