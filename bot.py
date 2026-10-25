@@ -53,7 +53,7 @@ RIVAL_LEARN_EVERY = int(os.getenv("RIVAL_LEARN_EVERY_MESSAGES", "10"))  # re-lea
 ROAST_CHANCE = float(os.getenv("RIVAL_ROAST_CHANCE", "0.15"))  # odds Yuki butts in on a message of his that wasn't for him
 ROAST_COOLDOWN = int(os.getenv("RIVAL_ROAST_COOLDOWN_SECONDS", "240"))  # per channel
 
-# presence: random activity (playing/watching/listening/competing/custom) every STATUS_INTERVAL_MINUTES (default 5), goes idle after IDLE_AFTER minutes of nobody talking to him
+# presence: random custom status every STATUS_INTERVAL_MINUTES (default 5), goes idle after IDLE_AFTER minutes of nobody talking to him
 STATUS_INTERVAL = int(os.getenv("STATUS_INTERVAL_MINUTES", "5")) * 60
 IDLE_AFTER = int(os.getenv("IDLE_AFTER_MINUTES", "5")) * 60
 
@@ -321,6 +321,8 @@ intents.message_content = True
 # people can be pinged (that's how real @name pings work), but never roles / @everyone unless code asks for it explicitly
 client = YukiClient(
     intents=intents,
+    status=discord.Status.online,
+    activity=discord.CustomActivity(name="waking up"),
     allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=False),
 )
 reply_slots = asyncio.Semaphore(MAX_CONCURRENT_REPLIES)
@@ -364,14 +366,12 @@ async def llm(messages, *, temperature=1.0, max_tokens=1024) -> str:
 
 
 FALLBACK_STATUSES = [
-    ("playing", "with fire (not really)"), ("playing", "dead on purpose"), ("playing", "hide and seek with my braincells"),
-    ("watching", "you type and not reply"), ("watching", "paint dry"), ("watching", "the void"),
-    ("listening", "to nothing, ngl"), ("listening", "to the same song again"), ("listening", "to your bad takes"),
-    ("competing", "in a nap contest"), ("competing", "against my own laziness"),
-    ("custom", "staring at the ceiling"), ("custom", "lowkey hungry"), ("custom", "rotting"),
+    "staring at the ceiling", "lowkey hungry", "pretending to work", "doomscrolling",
+    "touching grass (briefly)", "thinking about nothing", "buffering...", "vibing ngl",
+    "ignoring my responsibilities", "one more video then sleep", "napping with my eyes open",
+    "arguing with myself", "rotting", "mentally elsewhere",
 ]
-ACTIVITY_KINDS = ("playing", "watching", "listening", "competing", "custom")
-presence = {"last_talked": time.time(), "kind": None, "text": None, "changed_at": 0.0, "state": None, "recent": []}
+presence = {"last_talked": time.time(), "text": None, "changed_at": 0.0, "state": None, "recent": []}
 
 
 def mark_talked() -> None:
@@ -379,33 +379,17 @@ def mark_talked() -> None:
     presence["last_talked"] = time.time()
 
 
-def build_activity(kind: str, text: str):
-    if kind == "playing":
-        return discord.Game(name=text)
-    if kind == "watching":
-        return discord.Activity(type=discord.ActivityType.watching, name=text)
-    if kind == "listening":
-        return discord.Activity(type=discord.ActivityType.listening, name=text)
-    if kind == "competing":
-        return discord.Activity(type=discord.ActivityType.competing, name=text)
-    return discord.CustomActivity(name=text)
-
-
-async def pick_status() -> tuple[str, str]:
-    """Yuki picks his own activity: a type (playing / watching / listening / competing / custom) and the text."""
-    avoid = ", ".join(t for _, t in presence["recent"][-6:]) or "none yet"
+async def pick_status() -> str:
+    avoid = ", ".join(presence["recent"][-6:]) or "none yet"
     try:
         raw = await llm(
             [
-                {"role": "system", "content": "You pick the Discord activity for Yuki, a lazy, sarcastic, chaotic Gen Z Discord bot. Reply with ONLY one line in the exact format: type | text"},
+                {"role": "system", "content": "You write the custom Discord status for Yuki, a lazy, sarcastic, chaotic Gen Z Discord bot. Reply with ONLY the status text, nothing else."},
                 {
                     "role": "user",
                     "content": (
-                        "pick a random activity for yourself right now, whatever you feel like. "
-                        "type must be one of: playing, watching, listening, competing, custom. "
-                        "the text finishes the sentence (playing ___ / watching ___ / listening to ___ / competing in ___), "
-                        "or for custom it's a mood or tiny joke. lowercase, casual, under 40 characters, no quotes, no hashtags, at most one emoji (usually none). "
-                        "vary the type, don't always pick the same one. "
+                        "pick a random status for yourself right now, whatever you feel like. could be a mood, a fake activity, "
+                        "a dumb thought, a tiny joke. lowercase, casual, under 50 characters, no quotes, no hashtags, at most one emoji (usually none). "
                         f"don't repeat these recent ones: {avoid}. random seed for variety: {random.randint(1000, 9999)}"
                     ),
                 },
@@ -413,17 +397,12 @@ async def pick_status() -> tuple[str, str]:
             temperature=1.3,
             max_tokens=60,
         )
-        line = (raw.splitlines() or [""])[0].strip()
-        if "|" in line:
-            kind, text = (x.strip() for x in line.split("|", 1))
-            kind = kind.lower().strip("`\"' ")
-            text = text.strip("`\"' ").strip()
-            if kind in ACTIVITY_KINDS and 2 <= len(text) <= 100:
-                return kind, text
+        text = (raw.splitlines() or [""])[0].strip().strip("\"'`").strip()
+        if 2 <= len(text) <= 100:
+            return text
     except Exception:
-        log.exception("couldn't get an activity from the model, using a fallback")
-    used = {t for _, t in presence["recent"]}
-    choices = [x for x in FALLBACK_STATUSES if x[1] not in used] or FALLBACK_STATUSES
+        log.exception("couldn't get a status from the model, using a fallback")
+    choices = [x for x in FALLBACK_STATUSES if x not in presence["recent"]] or FALLBACK_STATUSES
     return random.choice(choices)
 
 
@@ -433,20 +412,23 @@ async def presence_loop():
         try:
             now = time.time()
             if presence["text"] is None or now - presence["changed_at"] >= STATUS_INTERVAL:
-                presence["kind"], presence["text"] = await pick_status()
+                presence["text"] = await pick_status()
                 presence["changed_at"] = time.time()
-                presence["recent"] = (presence["recent"] + [(presence["kind"], presence["text"])])[-10:]
+                presence["recent"] = (presence["recent"] + [presence["text"]])[-10:]
                 presence["state"] = None  # force a refresh below
-                log.info("new activity: %s %s", presence["kind"], presence["text"])
+                log.info("new status: %s", presence["text"])
             idle = time.time() - presence["last_talked"] > IDLE_AFTER
-            want = (idle, presence["kind"], presence["text"])
+            want = (idle, presence["text"])
+            if time.time() - presence.get("applied_at", 0) > 600:
+                presence["state"] = None  # discord sometimes silently drops bot statuses, so push it again every 10 min
             if want != presence["state"]:
                 await client.change_presence(
                     status=discord.Status.idle if idle else discord.Status.online,
-                    activity=build_activity(presence["kind"], presence["text"]),
+                    activity=discord.CustomActivity(name=presence["text"]),
                 )
                 presence["state"] = want
-                log.info("presence -> %s | %s %s", "idle" if idle else "online", presence["kind"], presence["text"])
+                presence["applied_at"] = time.time()
+                log.info("presence -> %s | %s", "idle" if idle else "online", presence["text"])
         except Exception:
             log.exception("presence update failed, will retry")
         await asyncio.sleep(15)
@@ -1213,11 +1195,13 @@ async def persona_command(interaction: discord.Interaction, action: app_commands
 
 @client.event
 async def on_ready():
+    presence["state"] = None  # re-send the activity after every (re)connect
     log.info("logged in as %s (yuki is awake. barely.) using model %s", client.user, MODEL)
 
 
 @client.event
 async def on_resumed():
+    presence["state"] = None
     log.info("gateway session resumed")
 
 
