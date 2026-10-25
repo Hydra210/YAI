@@ -74,7 +74,12 @@ and (b) to word the short reminder when somebody actually breaks one.
    people if it is mentionable or Yuki has the Mention Everyone permission**; otherwise he falls back to pinging the owner. He doesn't delete anything.
    Staff are skipped, and the same person gets one reminder per category every 2 minutes.
 
-`/mod`: `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`, `skiprules`, plus `access` and `words` (below).
+`/mod`: `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`, `skiprules`, plus `channels`, `access` and `words` (below).
+
+**Channels he never moderates (`/mod channels`):** `add <channel>`, `remove <channel>`, `list`, `clear`. Anything posted in a listed channel is
+skipped completely: no checks, no reminders, no staff pings, and nothing counts toward spam or repeat-insult tracking. Pick a **category** to cover every
+channel inside it, and threads / forum posts inside a listed channel are skipped too. Up to 50 per server, saved in Postgres, and `/mod status` shows them.
+He still reads and remembers messages there and still answers people who talk to him; only the rule enforcement is off.
 
 **Rules he shouldn't enforce (`/mod skiprules`):** shows a dropdown with every rule he read from the rules channel (and what each one checks).
 Pick the ones he should leave alone and close the dropdown to save; "enforce everything again" clears it. He still knows the rules (he can
@@ -87,6 +92,12 @@ Staff can change that with `/mod access`: `level` (Manage Server / only Administ
 `allow_user` / `remove_user`, `show`. People you add by role or user can use every `/mod` command except `/mod access` itself, which only
 the server owner or an Administrator can change, so a delegate can't hand out access. The `/mod` commands are visible to everyone in the
 command list (so the people you add can see them) but anyone without access gets a "no access" message.
+
+**Low-level slur exceptions (`/mod words allow_slur`, owner or Administrator only):** pick from a fixed list (`retard`, `retards`, `retarded`, `fag`, `fags`,
+`faggot`, `faggots`) to stop flagging that word in this server. The list is short on purpose (`LOW_LEVEL_SLURS` in `moderation.py`): the n-word and every other
+racial, ethnic or religious slur in the detector can't be allowed by any setting. Heads up: the bullying detector doesn't score these words at all, so by default
+an allowed word is still flagged when it's aimed at a person (a mention, a reply, or "you/ur ..."), because otherwise nothing would catch it. Turn that off with
+`/mod setting directed_slurs off`. `/mod words remove`, `list`, `clear` and `/mod test` all know about these exceptions.
 
 **Swear filter exceptions (`/mod words`):** `allow <word>` makes an exception (say swearing is banned but `shit` is fine), `block <word>` blocks
 a specific word even when no rule mentions swearing, `mode` switches between "built-in list plus my words" and "ONLY my blocked words",

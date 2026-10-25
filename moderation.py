@@ -82,7 +82,12 @@ FALLBACK = {
 TIER_RANK = {"": 0, "high": 1, "mod": 2, "admin": 3, "owner": 4}
 TIER_LABEL = {"owner": "server owner", "admin": "admin", "mod": "mod/staff", "high": "high role"}
 
-DEFAULT_SETTINGS = {"enabled": True, "exempt_staff": True, "slur_fallback": True, "harass_fallback": True}
+DEFAULT_SETTINGS = {"enabled": True, "exempt_staff": True, "slur_fallback": True, "harass_fallback": True, "directed_slurs": True}
+
+# The low-severity slurs a server's admins may choose to allow (/mod words allow_slur). It's a short fixed list on purpose: the n-word
+# and every other racial, ethnic or religious slur in the detector can't be allowed by any setting.
+LOW_LEVEL_SLURS = ("retard", "retards", "retarded", "fag", "fags", "faggot", "faggots")
+_SECOND_PERSON = re.compile(r"(?<![a-z0-9])(?:you|u|ya|yu|ur|youre|you're|your|urself|yourself)(?![a-z0-9])")
 
 # used when the server has no rule he could match to slurs: slurs are still checked (turn off with /mod setting)
 GENERIC_RULES = {
@@ -150,6 +155,7 @@ def is_shouting(text: str) -> bool:
 # ---- per-server word lists: exceptions ("allow") and extra / only-these blocked words ("block") -------------
 
 MAX_WORDS = 40
+MAX_EXEMPT_CHANNELS = 50
 _LEET_CLS = {"a": "[a4@]", "e": "[e3]", "i": "[i1!|]", "o": "[o0]", "s": "[s5$]", "t": "[t7+]"}
 _WORD_OK = re.compile(r"[\w' -]{2,32}")
 ACCESS_LEVELS = {
@@ -320,7 +326,28 @@ class Mod:
 
     def words(self, gid: int) -> dict:
         w = self.mem.fast_get(gid, "words") or {}
-        return {"allow": list(w.get("allow") or []), "block": list(w.get("block") or []), "mode": w.get("mode") or "default"}
+        return {
+            "allow": list(w.get("allow") or []),
+            "block": list(w.get("block") or []),
+            "slur_allow": [x for x in (w.get("slur_allow") or []) if x in LOW_LEVEL_SLURS],
+            "mode": w.get("mode") or "default",
+        }
+
+    def _slur(self, gid: int, text: str) -> bool:
+        """Slur check with this server's low-level slur exceptions taken out of the text first."""
+        allowed = self.words(gid)["slur_allow"]
+        if allowed:
+            return has_slur(word_regex(tuple(allowed), False).sub(" ", _fold(text)))
+        return has_slur(text)
+
+    def _directed_exempt_slur(self, message: discord.Message, gid: int, text: str) -> bool:
+        """An allowed slur is fine in banter, but not pointed at a person (setting: directed_slurs). Aimed at Yuki doesn't count."""
+        if not self.words(gid)["slur_allow"] or not self.settings(gid)["directed_slurs"] or not has_slur(text):
+            return False
+        ids, to_bot = self._targets(message)
+        if to_bot:
+            return False
+        return bool(ids) or bool(_SECOND_PERSON.search(_fold(text)))
 
     def _profane(self, gid: int, text: str) -> bool:
         """Swearing check with this server's word lists. Exceptions only ever relax the built-in swear list (never slurs)."""
@@ -359,6 +386,32 @@ class Mod:
     def skipped_in_category(self, gid: int, category: str) -> list:
         entries = self.skipped_entries(gid)
         return [r["n"] for r in self.rules(gid) if r.get("category") == category and entries and self._is_skipped(r, entries)]
+
+    def exempt_channels(self, gid: int) -> list:
+        """Channel / category ids where Yuki never moderates (RAM only)."""
+        out = []
+        for x in self.mem.fast_get(gid, "exempt_channels") or []:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                pass
+        return out
+
+    def channel_exempt(self, channel, gid: int) -> bool:
+        """True if this channel is on the no-moderation list. Also true for a thread inside an exempt channel
+        (or forum), and for any channel inside an exempt category."""
+        ids = set(self.exempt_channels(gid))
+        if not ids or channel is None:
+            return False
+        check = {
+            getattr(channel, "id", None),
+            getattr(channel, "parent_id", None),  # threads / forum posts: the channel they live in
+            getattr(channel, "category_id", None),  # channels inside an exempt category
+        }
+        parent = getattr(channel, "parent", None)
+        if parent is not None:
+            check.add(getattr(parent, "category_id", None))
+        return bool(ids & {c for c in check if c})
 
     def enforced(self, gid: int) -> dict:
         """category -> rule to quote. Categories some rule of this server covers (minus rules the staff told him to skip),
@@ -703,13 +756,15 @@ class Mod:
         if guild is None or getattr(message.author, "roles", None) is None:  # not a server member (webhook etc)
             return None
         gid = guild.id
+        if self.channel_exempt(message.channel, gid):  # staff said: never moderate here (no checks, no counters)
+            return None
         enforced = self.enforced(gid)
         if not enforced or not self.settings(gid)["enabled"]:
             return None
         text = message.content or ""
 
         cat = None
-        if "slur" in enforced and has_slur(text):
+        if "slur" in enforced and (self._slur(gid, text) or self._directed_exempt_slur(message, gid, text)):
             cat = "slur"
         elif "harassment" in enforced and self._harassment(message, text):
             cat = "harassment"
@@ -778,6 +833,8 @@ class Mod:
     async def enforce(self, message: discord.Message, category: str):
         guild, channel, author = message.guild, message.channel, message.author
         gid = guild.id
+        if self.channel_exempt(channel, gid):
+            return
         rule = self.rule_for(gid, category)
         if rule is None:
             return
@@ -957,10 +1014,13 @@ class Mod:
                 f"**notes:** {len(mod.mem.fast_get(g.id, 'notes') or [])}",
                 *([f"**skipped rules:** {sum(1 for r in rules if mod._is_skipped(r, mod.skipped_entries(g.id)))} (`/mod skiprules`)"]
                   if mod.skipped_entries(g.id) else []),
+                *([f"**unmoderated channels:** {', '.join(f'<#{c}>' for c in mod.exempt_channels(g.id))} (`/mod channels`)"]
+                  if mod.exempt_channels(g.id) else []),
                 f"**who can use /mod:** {ACCESS_LEVELS[mod.access(g.id)['level']]}"
                 + (f", plus {len(mod.access(g.id)['roles'])} role(s) and {len(mod.access(g.id)['users'])} user(s) you added" if mod.access(g.id)["roles"] or mod.access(g.id)["users"] else ""),
                 f"**swear filter:** {'only your blocked words' if mod.words(g.id)['mode'] == 'custom' else 'built-in list'}"
-                f", {len(mod.words(g.id)['allow'])} allowed exception(s), {len(mod.words(g.id)['block'])} blocked word(s)",
+                f", {len(mod.words(g.id)['allow'])} allowed exception(s), {len(mod.words(g.id)['block'])} blocked word(s)"
+                + (f", {len(mod.words(g.id)['slur_allow'])} allowed low-level slur(s)" if mod.words(g.id)["slur_allow"] else ""),
             ]
             if not rules:
                 lines.append("**heads up:** i haven't read any rules (rules channel not found, or not visible to @everyone). "
@@ -1012,6 +1072,7 @@ class Mod:
                 app_commands.Choice(name="skip staff members (exempt_staff)", value="exempt_staff"),
                 app_commands.Choice(name="always check slurs even with no matching rule (slur_fallback)", value="slur_fallback"),
                 app_commands.Choice(name="always check bullying/insults even with no matching rule (harass_fallback)", value="harass_fallback"),
+                app_commands.Choice(name="still flag allowed slurs when aimed at a person (directed_slurs)", value="directed_slurs"),
             ],
             value=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")],
         )
@@ -1042,8 +1103,15 @@ class Mod:
             g = i.guild
             st = mod.settings(g.id)
             found, notes = [], {}
-            if has_slur(text):
+            exempt_note = None
+            if mod._slur(g.id, text):
                 found.append("slur")
+            elif has_slur(text):  # only an allowed word is in there
+                if st["directed_slurs"] and (aimed_at_someone or _SECOND_PERSON.search(_fold(text))):
+                    found.append("slur")
+                    notes["slur"] = "an allowed word, but flagged because it's aimed at someone (`/mod setting` directed_slurs)"
+                else:
+                    exempt_note = "**allowed:** that only has a low-level slur you allowed, so it wouldn't be flagged."
             sev_h, why_h = analyze_harassment(text, aimed_at_someone)
             if sev_h:
                 found.append("harassment")
@@ -1075,8 +1143,12 @@ class Mod:
                     continue
                 quote = f"rule {r['n']}: {r['text']}" if r["n"] else r["text"]
                 lines.append(f"- {c}: would enforce, quoting {quote}" + (f"; {notes[c]}" if c in notes else ""))
+            if exempt_note:
+                lines.append(exempt_note)
             if not st["enabled"]:
                 lines.append("**but** auto moderation is OFF (`/mod setting`).")
+            if mod.channel_exempt(i.channel, g.id):
+                lines.append("**but** this channel is on the no-moderation list, so nothing posted here is checked (`/mod channels`).")
             if found and st["exempt_staff"] and mod.is_staff(i.user):
                 lines.append("**but** you count as staff and staff are skipped, so a message from you wouldn't trigger it.")
             ping_text, _, _ = mod.staff_ping(g)
@@ -1103,6 +1175,60 @@ class Mod:
                 return await deny(i)
             await mod.run(mod.mem.fast_delete, i.guild.id, "notes")
             await i.response.send_message("notes cleared.", ephemeral=True)
+
+        # ---------------------------------------------------------------- channels yuki never moderates
+        chans = app_commands.Group(name="channels", description="channels yuki should never moderate", parent=group)
+
+        async def save_exempt(gid: int, ids: list):
+            if ids:
+                await mod.run(mod.mem.fast_set, gid, "exempt_channels", ids)
+            else:
+                await mod.run(mod.mem.fast_delete, gid, "exempt_channels")
+
+        @chans.command(name="add", description="yuki will not moderate this channel (or every channel in this category) at all")
+        @app_commands.describe(channel="a text, voice, forum or announcement channel, or a whole category")
+        async def channels_add(i: discord.Interaction, channel: discord.abc.GuildChannel):
+            if not allowed(i):
+                return await deny(i)
+            ids = mod.exempt_channels(i.guild.id)
+            if channel.id in ids:
+                return await i.response.send_message(f"{channel.mention} is already on the list.", ephemeral=True)
+            if len(ids) >= MAX_EXEMPT_CHANNELS:
+                return await i.response.send_message(f"that's {MAX_EXEMPT_CHANNELS} already, remove one first.", ephemeral=True)
+            ids.append(channel.id)
+            await save_exempt(i.guild.id, ids)
+            extra = " that covers every channel inside it too." if isinstance(channel, discord.CategoryChannel) else \
+                " threads inside it are left alone too." if isinstance(channel, (discord.TextChannel, discord.ForumChannel)) else ""
+            await i.response.send_message(f"ok, i won't moderate {channel.mention} at all.{extra}", ephemeral=True)
+
+        @chans.command(name="remove", description="moderate this channel (or category) again")
+        @app_commands.describe(channel="the channel or category to put back")
+        async def channels_remove(i: discord.Interaction, channel: discord.abc.GuildChannel):
+            if not allowed(i):
+                return await deny(i)
+            ids = mod.exempt_channels(i.guild.id)
+            if channel.id not in ids:
+                return await i.response.send_message(f"{channel.mention} wasn't on the list.", ephemeral=True)
+            ids.remove(channel.id)
+            await save_exempt(i.guild.id, ids)
+            await i.response.send_message(f"ok, {channel.mention} is moderated again.", ephemeral=True)
+
+        @chans.command(name="list", description="see the channels yuki never moderates")
+        async def channels_list(i: discord.Interaction):
+            if not allowed(i):
+                return await deny(i)
+            ids = mod.exempt_channels(i.guild.id)
+            if not ids:
+                return await i.response.send_message("no exceptions: i moderate every channel i can see.", ephemeral=True)
+            await i.response.send_message("**not moderated:** " + ", ".join(f"<#{c}>" for c in ids), ephemeral=True,
+                                          allowed_mentions=discord.AllowedMentions.none())
+
+        @chans.command(name="clear", description="moderate every channel again")
+        async def channels_clear(i: discord.Interaction):
+            if not allowed(i):
+                return await deny(i)
+            await save_exempt(i.guild.id, [])
+            await i.response.send_message("list cleared. i moderate every channel again.", ephemeral=True)
 
         # ---------------------------------------------------------------- who can use these commands
         access = app_commands.Group(name="access", description="who is allowed to use yuki's mod commands", parent=group)
@@ -1193,7 +1319,7 @@ class Mod:
         words = app_commands.Group(name="words", description="exceptions and extra blocked words for the swear filter", parent=group)
 
         async def save_words(gid: int, w: dict):
-            if not w["allow"] and not w["block"] and w["mode"] == "default":
+            if not w["allow"] and not w["block"] and not w["slur_allow"] and w["mode"] == "default":
                 await mod.run(mod.mem.fast_delete, gid, "words")
             else:
                 await mod.run(mod.mem.fast_set, gid, "words", w)
@@ -1207,7 +1333,9 @@ class Mod:
             if not w:
                 return await i.response.send_message("that doesn't look like a word i can use (letters and numbers, 2 to 32 characters).", ephemeral=True)
             if has_slur(w):
-                return await i.response.send_message("nope, i don't make exceptions for slurs or hate speech.", ephemeral=True)
+                hint = (" this one is on the low-level list though: an admin can use `/mod words allow_slur`."
+                        if w in LOW_LEVEL_SLURS else "")
+                return await i.response.send_message(f"that's a slur, so it can't go through the normal exceptions.{hint}", ephemeral=True)
             data = mod.words(i.guild.id)
             if w in data["block"]:
                 data["block"].remove(w)
@@ -1221,6 +1349,20 @@ class Mod:
             await i.response.send_message(
                 f"ok, `{w}` is allowed now. exceptions only loosen the swear filter, so insults aimed at people and slurs are still checked.",
                 ephemeral=True)
+
+        @words.command(name="allow_slur", description="allow a low-level slur in this server (admins only, pick from the list)")
+        @app_commands.describe(word="only the low-severity ones can be allowed. the n-word and other racial slurs never can")
+        @app_commands.choices(word=[app_commands.Choice(name=w, value=w) for w in LOW_LEVEL_SLURS])
+        async def words_allow_slur(i: discord.Interaction, word: app_commands.Choice[str]):
+            if not is_admin(i):
+                return await deny_admin(i)
+            data = mod.words(i.guild.id)
+            if word.value not in data["slur_allow"]:
+                data["slur_allow"].append(word.value)
+            await save_words(i.guild.id, data)
+            tail = (" i'll still flag it when it's aimed at someone (turn that off in `/mod setting`: directed_slurs)."
+                    if mod.settings(i.guild.id)["directed_slurs"] else " it's off completely now, even when aimed at someone.")
+            await i.response.send_message(f"ok, `{word.value}` is allowed in this server.{tail}", ephemeral=True)
 
         @words.command(name="block", description="block a specific word (works even if no rule mentions swearing)")
         @app_commands.describe(word="the word to block")
@@ -1248,9 +1390,9 @@ class Mod:
                 return await deny(i)
             w = clean_word(word)
             data = mod.words(i.guild.id)
-            if not w or (w not in data["allow"] and w not in data["block"]):
+            if not w or (w not in data["allow"] and w not in data["block"] and w not in data["slur_allow"]):
                 return await i.response.send_message("that word isn't on either list.", ephemeral=True)
-            for k in ("allow", "block"):
+            for k in ("allow", "block", "slur_allow"):
                 if w in data[k]:
                     data[k].remove(w)
             await save_words(i.guild.id, data)
@@ -1284,7 +1426,8 @@ class Mod:
                 f"**mode:** {'only your blocked words' if data['mode'] == 'custom' else 'built-in swear list plus your blocked words'}",
                 "**allowed (exceptions):** " + (", ".join(data["allow"]) or "none"),
                 "**blocked:** " + (", ".join(data["block"]) or "none"),
-                "exceptions only loosen the built-in swear list. slurs and bullying are always checked.",
+                "**allowed low-level slurs:** " + (", ".join(data["slur_allow"]) or "none"),
+                "word exceptions only loosen the swear list. other slurs stay blocked, and bullying is still checked.",
             ]
             await i.response.send_message("\n".join(lines)[:1900], ephemeral=True)
 
