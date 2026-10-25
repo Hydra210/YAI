@@ -27,11 +27,20 @@ from collections import defaultdict, deque
 import discord
 from discord import app_commands
 
+from textcheck import analyze_harassment, find_links, has_hate_slur, has_personal_info, has_strong_swear
+
 log = logging.getLogger("yuki.mod")
 
 # rule categories the bot's code can spot by itself -> what the AI is told each one means when tagging rules
+RULES_SCHEMA = 2  # bump when the rule categories change, so rules get re-tagged once
+
 CATEGORIES = {
     "slur": "slurs, racism, hate speech, the n-word, discrimination, bigoted or hateful language",
+    "harassment": "bullying, harassing or insulting other members, personal attacks, toxicity, telling people to hurt themselves, "
+                  "threats, and general 'be respectful / be kind / treat others well' rules",
+    "profanity": "swearing, cursing, strong language, keeping the chat PG or family friendly",
+    "links": "posting links, unauthorized or external links, link spam, phishing or scam links",
+    "personal_info": "sharing personal information, doxxing, phone numbers, emails, addresses, IP addresses",
     "invites": "advertising, self promotion, posting server invite links",
     "mass_mention": "mass pinging or mention spam",
     "spam": "spamming, flooding the chat, repeating the same message",
@@ -41,6 +50,10 @@ CATEGORIES = {
 # short, neutral wording for the reminder prompt (never contains the offending words themselves)
 WHAT_THEY_DID = {
     "slur": "used a slur / hateful word",
+    "harassment": "insulted or bullied another member",
+    "profanity": "used strong swearing",
+    "links": "posted a link that isn't allowed",
+    "personal_info": "shared personal information",
     "invites": "posted a server invite or advertised",
     "mass_mention": "pinged a ton of people at once",
     "spam": "spammed or flooded the chat",
@@ -49,6 +62,10 @@ WHAT_THEY_DID = {
 
 FALLBACK = {
     "slur": "hey, don't use that word here.",
+    "harassment": "hey, don't talk to people like that.",
+    "profanity": "watch the language.",
+    "links": "no links like that here.",
+    "personal_info": "don't post personal info here.",
     "invites": "no invite links or ads here, please.",
     "mass_mention": "chill with the mass pings.",
     "spam": "stop spamming, my eyes hurt.",
@@ -58,10 +75,14 @@ FALLBACK = {
 TIER_RANK = {"": 0, "high": 1, "mod": 2, "admin": 3, "owner": 4}
 TIER_LABEL = {"owner": "server owner", "admin": "admin", "mod": "mod/staff", "high": "high role"}
 
-DEFAULT_SETTINGS = {"enabled": True, "exempt_staff": True, "slur_fallback": True}
+DEFAULT_SETTINGS = {"enabled": True, "exempt_staff": True, "slur_fallback": True, "harass_fallback": True}
 
 # used when the server has no rule he could match to slurs: slurs are still checked (turn off with /mod setting)
-GENERIC_RULES = {"slur": {"n": 0, "text": "no slurs or hate speech", "category": "slur", "generic": True}}
+GENERIC_RULES = {
+    "slur": {"n": 0, "text": "no slurs or hate speech", "category": "slur", "generic": True},
+    "harassment": {"n": 0, "text": "be respectful: no bullying, insults or harassment", "category": "harassment", "generic": True},
+}
+HARASS_RULE_HINT = re.compile(r"harass|bull|toxic|insult|disrespect|respect|kind|nice|attack|abus|personal|treat|decen|civil", re.I)
 SLUR_RULE_HINT = re.compile(r"slur|hate|racis|racial|discriminat|offensive|bigot|n-?word|toxic|harass|respect|slang", re.I)
 
 RULES_STRONG = re.compile(r"rules?|guidelines?|code[-_ ]?of[-_ ]?conduct|\bcoc\b|terms|tos\b", re.I)
@@ -109,7 +130,7 @@ def normalize(text: str) -> str:
 
 def has_slur(text: str) -> bool:
     t = normalize(text)
-    return bool(_SLUR_N.search(t) or (_EXTRA_RE and _EXTRA_RE.search(t)))
+    return bool(_SLUR_N.search(t) or (_EXTRA_RE and _EXTRA_RE.search(t)) or has_hate_slur(text))
 
 
 def is_shouting(text: str) -> bool:
@@ -155,6 +176,8 @@ class Mod:
         self._flood: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=10))
         self._cool_user: dict[tuple, float] = {}
         self._cool_chan: dict[int, float] = {}
+        self._hits: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=12))  # (guild, user) -> (time, target) of insults
+        self._verdict: dict[int, tuple] = {}  # message id -> (severity, why), handed from detect() to enforce()
         self._strikes: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=12))
         self._next_rules: dict[int, float] = {}
         self._next_roles: dict[int, float] = {}
@@ -181,6 +204,10 @@ class Mod:
                 out[c] = r
         if "slur" not in out and self.settings(gid)["slur_fallback"]:
             out["slur"] = next((r for r in rules if SLUR_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["slur"]
+        if "harassment" not in out and self.settings(gid)["harass_fallback"]:
+            out["harassment"] = (
+                next((r for r in rules if HARASS_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["harassment"]
+            )
         return out
 
     def rule_for(self, gid: int, category: str):
@@ -328,7 +355,8 @@ class Mod:
             '"none":\n'
             f"{cats}\n"
             '- "none": anything else\n'
-            'Only use "slur" for rules about slurs, hate speech, racism or discrimination, not just "be respectful".\n'
+            'Only use "slur" for rules about slurs, hate speech, racism or discrimination. Use "harassment" for rules about bullying, '
+            'insults, toxicity or being respectful / kind in general.\n'
             'Reply with ONLY a JSON object: {"rules": [{"n": 1, "text": "...", "category": "none"}]} with at most 25 rules.'
         )
         raw = await self.llm(
@@ -380,7 +408,7 @@ class Mod:
             return f"#{ch.name} has nothing readable in it (rules might be images)"
         digest = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()
         meta = self.mem.fast_get(guild.id, "rules_meta") or {}
-        if not force and meta.get("hash") == digest and self.rules(guild.id):
+        if not force and meta.get("hash") == digest and meta.get("schema") == RULES_SCHEMA and self.rules(guild.id):
             meta["checked"] = now
             await self.run(self.mem.fast_set, guild.id, "rules_meta", meta)
             return f"#{ch.name} hasn't changed, still {len(self.rules(guild.id))} rules"
@@ -390,7 +418,7 @@ class Mod:
         await self.run(self.mem.fast_set, guild.id, "rules", parsed)
         await self.run(
             self.mem.fast_set, guild.id, "rules_meta",
-            {"channel_id": ch.id, "channel": ch.name, "hash": digest, "checked": now, "read": now},
+            {"channel_id": ch.id, "channel": ch.name, "hash": digest, "checked": now, "read": now, "schema": RULES_SCHEMA},
         )
         cats = sorted({r["category"] for r in parsed if r["category"] != "none"})
         return f"read {len(parsed)} rules from #{ch.name}; auto-checking: {', '.join(cats) or 'nothing (no checkable rules)'}"
@@ -447,6 +475,47 @@ class Mod:
 
     # ------------------------------------------------------------ detection (code only, zero tokens)
 
+    def _targets(self, message: discord.Message):
+        """(ids of the members this message is aimed at, whether it's aimed at Yuki himself)."""
+        me = self.client.user
+        author_id = message.author.id
+        ids = [m.id for m in message.mentions if not getattr(m, "bot", False) and m.id != author_id]
+        to_bot = bool(me is not None and me in message.mentions) or (message.content or "").lower().startswith("yuki")
+        ref = getattr(message, "reference", None)
+        if ref is not None:
+            ra = getattr(getattr(ref, "resolved", None), "author", None)
+            if ra is not None:
+                if me is not None and ra.id == me.id:
+                    to_bot = True
+                elif ra.id != author_id:
+                    ids.insert(0, ra.id)
+            else:
+                ids.append(-1)  # a reply to something I can't see, still aimed at somebody
+        return ids, to_bot
+
+    def _harassment(self, message: discord.Message, text: str) -> bool:
+        """Is this bullying? Scored by textcheck, then turned up when the same person keeps doing it. Plain code."""
+        ids, to_bot = self._targets(message)
+        if to_bot:  # insulting Yuki himself isn't moderated (he roasts back)
+            return False
+        sev, why = analyze_harassment(text, directed_ctx=bool(ids))
+        if sev == 0:
+            return False
+        now = time.time()
+        target = ids[0] if ids else 0
+        hist = self._hits[(message.guild.id, message.author.id)]
+        hist.append((now, target))
+        if sev == 1:  # one mild insult is just a reaction, but a pattern is bullying
+            recent = [(t, tg) for t, tg in hist if now - t <= 600]
+            same = sum(1 for _, tg in recent if target and tg == target)
+            if len(recent) >= 4 or same >= 3:
+                sev, why = 2, f"keeps insulting people ({why})"
+        self._verdict[message.id] = (sev, why)
+        if len(self._verdict) > 500:
+            for k in list(self._verdict)[:250]:
+                self._verdict.pop(k, None)
+        return True
+
     def detect(self, message: discord.Message):
         """Which enforced rule category this message breaks, or None. Plain code: no AI, no database."""
         guild = message.guild
@@ -461,8 +530,16 @@ class Mod:
         cat = None
         if "slur" in enforced and has_slur(text):
             cat = "slur"
+        elif "harassment" in enforced and self._harassment(message, text):
+            cat = "harassment"
+        elif "profanity" in enforced and has_strong_swear(text):
+            cat = "profanity"
         elif "invites" in enforced and _INVITE.search(text):
             cat = "invites"
+        elif "links" in enforced and find_links(text):
+            cat = "links"
+        elif "personal_info" in enforced and has_personal_info(text):
+            cat = "personal_info"
         elif "mass_mention" in enforced and len(message.mentions) >= 6:
             cat = "mass_mention"
         elif "caps" in enforced and is_shouting(text):
@@ -485,16 +562,17 @@ class Mod:
 
     # ------------------------------------------------------------ enforcement
 
-    async def _word_it(self, name: str, category: str, rule: dict, times: int, burst: int = 1) -> str:
+    async def _word_it(self, name: str, category: str, rule: dict, times: int, burst: int = 1, why: str = "", sev: int = 2) -> str:
         which = (
             f"rule {rule['n']}: \"{rule['text']}\"" if rule["n"] else f"the server's expectation: {rule['text']}"
         )
         prompt = (
             f"{name} just broke a server rule: {which}\n"
-            f"What they did: {WHAT_THEY_DID[category]}. This is time number {times} they've broken a rule in the last 24 hours"
+            f"What they did: {WHAT_THEY_DID[category]}{' (' + why + ')' if why else ''}. This is time number {times} they've broken a rule in the last 24 hours"
             + (f", and {burst} of those were in the last minute. If it's several in a row be firmer and clearly annoyed" if burst >= 3 else "")
             + ".\n"
-            "Write ONE short message (one or two sentences) telling them to stop. Casual lowercase discord voice, a little dry "
+            + ("This one is serious: say plainly that telling someone to hurt themselves, or threatening them, is never ok. " if sev >= 3 else "")
+            + "Write ONE short message (one or two sentences) telling them to stop. Casual lowercase discord voice, a little dry "
             "or sarcastic is fine, but firm. Hard rules: never repeat, quote or hint at the exact words they used (if it was "
             "a slur just say 'that word'); no @mentions or names; no emojis; don't threaten punishments; don't say you "
             "deleted anything. Output only the message."
@@ -522,6 +600,7 @@ class Mod:
         rule = self.rule_for(gid, category)
         if rule is None:
             return
+        sev, why = self._verdict.pop(message.id, (2, ""))
         me = guild.me
         perms = channel.permissions_for(me) if me is not None else None
         can_send = bool(perms and perms.send_messages)
@@ -529,6 +608,16 @@ class Mod:
             if gid not in self._warned_perms:
                 self._warned_perms.add(gid)
                 log.warning("can't send messages or react in #%s of %s, so rule breaks there get ignored", channel, guild.name)
+            return
+
+        if category == "harassment" and sev <= 1:
+            # mild / probably joking: only a warning reaction. It becomes a real reminder if the person keeps at it.
+            if perms.add_reactions:
+                try:
+                    await message.add_reaction("\u26a0\ufe0f")
+                except discord.HTTPException:
+                    pass
+            log.info("mild insult from %s (%s), reacted only", author, why)
             return
 
         now = time.time()
@@ -550,14 +639,14 @@ class Mod:
         # the full reminder + staff ping: at most once per 45s per person per rule type, and once per 10s per channel
         if not can_send:
             return
-        if now - self._cool_user.get((gid, author.id, category), 0) < 45 or now - self._cool_chan.get(channel.id, 0) < 10:
+        if now - self._cool_user.get((gid, author.id, category), 0) < (20 if sev >= 3 else 45) or now - self._cool_chan.get(channel.id, 0) < 10:
             log.info("%s broke the %s rule again but a reminder was just sent, only reacted", author, category)
             return
         self._cool_user[(gid, author.id, category)] = now
         self._cool_chan[channel.id] = now
 
         times = await self.run(self.mem.violation_count, gid, author.id, 86400)
-        reminder = await self._word_it(author.display_name, category, rule, max(times, 1), burst)
+        reminder = await self._word_it(author.display_name, category, rule, max(times, 1), burst, why, sev)
         ping_text, ping_roles, ping_users = self.staff_ping(guild)
 
         quote = f"> rule {rule['n']}: {rule['text']}" if rule["n"] else f"> {rule['text']}"
@@ -566,7 +655,7 @@ class Mod:
         lines = [f"{author.mention} {reminder}", quote]
         if ping_text:
             more = f", {burst}x in the last minute" if burst >= 3 else ""
-            lines.append(f"{ping_text} heads up, {what} ({max(times, 1)}x today{more})")
+            lines.append(f"{ping_text} heads up, {what} ({max(times, 1)}x today{more}{', serious' if sev >= 3 else ''})")
         content = "\n".join(lines)[:1900]
         allowed = discord.AllowedMentions(
             everyone=False, replied_user=False,
@@ -649,7 +738,7 @@ class Mod:
             roles = mod.mem.fast_get(g.id, "roles") or []
             lines = [
                 f"**moderation:** {'on' if st['enabled'] else 'off'} (staff exempt: {'yes' if st['exempt_staff'] else 'no'}, "
-                f"slurs always checked: {'yes' if st['slur_fallback'] else 'no'})",
+                f"slurs always checked: {'yes' if st['slur_fallback'] else 'no'}, bullying always checked: {'yes' if st['harass_fallback'] else 'no'})",
                 f"**rules:** {len(rules)} read" + (f" from #{meta['channel']}" if meta.get("channel") else " (no rules channel found)"),
                 "**auto-checked:** " + (", ".join(f"{c} (rule {r['n']})" for c, r in enforced.items()) or "nothing"),
                 f"**staff ping:** {ping_text or 'nobody pingable'}",
@@ -705,6 +794,7 @@ class Mod:
                 app_commands.Choice(name="auto moderation (enabled)", value="enabled"),
                 app_commands.Choice(name="skip staff members (exempt_staff)", value="exempt_staff"),
                 app_commands.Choice(name="always check slurs even with no matching rule (slur_fallback)", value="slur_fallback"),
+                app_commands.Choice(name="always check bullying/insults even with no matching rule (harass_fallback)", value="harass_fallback"),
             ],
             value=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")],
         )
@@ -717,26 +807,42 @@ class Mod:
             await i.response.send_message(f"{name.value} is now {value.value}.", ephemeral=True)
 
         @group.command(name="test", description="see what yuki would do if a regular member posted this text (nothing is sent)")
-        @app_commands.describe(text="the message to check")
-        async def test(i: discord.Interaction, text: str):
+        @app_commands.describe(text="the message to check", aimed_at_someone="pretend it mentions or replies to another member")
+        async def test(i: discord.Interaction, text: str, aimed_at_someone: bool = False):
             if not allowed(i):
                 return await deny(i)
             g = i.guild
             st = mod.settings(g.id)
-            found = []
+            found, notes = [], {}
             if has_slur(text):
                 found.append("slur")
+            sev_h, why_h = analyze_harassment(text, aimed_at_someone)
+            if sev_h:
+                found.append("harassment")
+                notes["harassment"] = {
+                    1: "mild: only a warning reaction (turns into a reminder if they keep doing it)",
+                    2: "reminder + staff ping",
+                    3: "serious: reminder + staff ping, firmer",
+                }[sev_h] + f" [{why_h}]"
+            if has_strong_swear(text):
+                found.append("profanity")
             if _INVITE.search(text):
                 found.append("invites")
+            if find_links(text):
+                found.append("links")
+            if has_personal_info(text):
+                found.append("personal_info")
             if is_shouting(text):
                 found.append("caps")
             enforced = mod.enforced(g.id)
             lines = [f"**detected:** {', '.join(found) or 'nothing (spam is only judged on real message bursts)'}"]
             for c in found:
                 r = enforced.get(c)
-                lines.append(f"- {c}: " + (
-                    f"would enforce, quoting {'rule ' + str(r['n']) + ': ' + r['text'] if r['n'] else r['text']}"
-                    if r else "NOT enforced: no rule in this server covers it"))
+                if not r:
+                    lines.append(f"- {c}: NOT enforced: no rule in this server covers it")
+                    continue
+                quote = f"rule {r['n']}: {r['text']}" if r["n"] else r["text"]
+                lines.append(f"- {c}: would enforce, quoting {quote}" + (f"; {notes[c]}" if c in notes else ""))
             if not st["enabled"]:
                 lines.append("**but** auto moderation is OFF (`/mod setting`).")
             if found and st["exempt_staff"] and mod.is_staff(i.user):

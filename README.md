@@ -55,8 +55,20 @@ and (b) to word the short reminder when somebody actually breaks one.
    rules channel is edited, or on `/mod refresh`. The AI is skipped if the text didn't change.
 2. **Reading the roles:** every role is read and sorted into admin / mod (by permissions or name like Moderator, Staff, Helper) / high role (top quarter of
    the other roles) / regular. Each person's tier is saved the moment they talk, so he knows who is staff without looking.
-3. **What the code can check** (only if the server has a rule covering it): slurs (the n-word incl. `n1gg@`, `n.i.g.g.a`, spaced out), invite links, mass
-   pings (6+), spam (6 messages in 8s or the same message 3 times), all caps. Add your own banned words with `MOD_EXTRA_BLOCKED=word1,word2`.
+3. **What the code can check** (plain Python in `textcheck.py` and `moderation.py`, no AI, no tokens). Slurs, bullying and insults are checked **even if the
+   server has no matching rule** (switch off with `/mod setting`); the rest only when a rule covers them:
+   - **slur**: the n-word (incl. `n1gg@`, `n.i.g.g.a`, stuck-together repeats) plus other hate slurs (kept rot13-encoded in the source). Add your own with `MOD_EXTRA_BLOCKED=word1,word2`.
+   - **harassment (bullying):** scored 0-3 by *who the words are aimed at*, not just the words. "this game is fucking trash" is fine, "you worthless piece of shit" isn't.
+     An insult only counts when it targets someone: it says you/u/ur, mentions or replies to another member, or is an order like "shut up". lol/lmao/"love you" turn it
+     down a notch, "you're not stupid" cancels it, and insulting Yuki himself is never moderated (he roasts back).
+     Severity 3 = telling someone to hurt themselves ("kys", "go kill yourself") or a threat; 2 = "fuck you", strong insults, "nobody likes you"; 1 = mild or probably joking
+     (only a warning reaction). **Repetition escalates**: 4 mild insults in 10 minutes, or 3 at the same person, becomes a full reminder. In a game context, "i'll kill you" is only mild.
+   - **profanity:** any strong swearing (rule like "no cursing" / "keep it PG").
+   - **links:** any link except gifs and Discord's own (`MOD_LINK_ALLOW=site1.com,site2.com` to allow more). **invites:** Discord invite links.
+   - **personal_info:** emails, phone numbers (with separators), IP addresses.
+   - **mass pings** (6+), **spam** (6 messages in 8s or the same message 3 times), **all caps**.
+   It's a heuristic, not a mind reader: it can't catch sarcasm, images, other languages, or very creative misspellings, and `/mod test text:... aimed_at_someone:true`
+   shows exactly what it would do with a message so you can tune your expectations.
 4. **When someone breaks one:** Yuki replies to the message, pings the person, quotes the exact rule, and pings staff. The staff ping is a mod role
    (preferably one with "mod/staff" in the name and a real mod permission), else an admin role, else the server owner. **A role only really notifies
    people if it is mentionable or Yuki has the Mention Everyone permission**; otherwise he falls back to pinging the owner. He doesn't delete anything.
@@ -154,6 +166,7 @@ python bot.py
 | `RIVAL_LEARN_EVERY_MESSAGES` | no | New rival messages before Yuki re-learns him (default `10`) |
 | `RIVAL_ROAST_CHANCE` | no | Chance (0-1) he butts in on a rival message not aimed at him (default `0.15`) |
 | `RIVAL_ROAST_COOLDOWN_SECONDS` | no | Min seconds between those, per channel (default `240`) |
+| `MOD_LINK_ALLOW` | no | Extra domains the link rule allows, comma separated (gifs and Discord links are always allowed) |
 | `MOD_EXTRA_BLOCKED` | no | Extra banned words, comma separated (counted as the slur category) |
 | `MEMORY_RETENTION_DAYS` | no | How long raw messages are kept (default `90`) |
 | `LEARN_INTERVAL_SECONDS` | no | Min seconds between background learning calls (default `45`) |
