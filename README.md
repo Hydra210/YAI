@@ -96,8 +96,9 @@ the bot finds the rules channel, reads it (embeds included), and hands the text 
 | core | `list_skills`, `set_persona`, `clear_persona`, `run_python` | always |
 | discord | `get_server_rules`, `get_pinned_messages`, `find_channel`, `list_roles`, `get_user_info`, `get_server_info`, `list_channels`, `get_channel_info`, `read_channel` | words like rules, server, channel, roles, who is, pinned, `#channel` |
 | memory | `search_memory`, `recall_user`, `get_context` | said, remember, earlier, last week, what did |
-| media | `image_info`, `convert_image`, `resize_image` | gif, convert, resize, or an attached image |
+| media | `image_info`, `convert_image`, `resize_image`, `make_meme`, `look_at_image` | gif, convert, resize, meme, caption, rate, roast, or an attached image |
 | util | `current_time`, `calculate` | time, date, math |
+| search | `web_search` | news, latest, today, "is that true", who won, price of, look up |
 | web | `fetch_url` | a link, "website", "article" |
 
 **"Can he do that?"** If Yuki isn't sure, he calls `list_skills`, which shows him everything he has and unlocks all
@@ -133,6 +134,19 @@ Anyone can trigger it **through Yuki**, but only as a last resort. It's offered 
 
 **This is still not a real sandbox.** A Python-level policy can be beaten by someone determined. Run the bot in a
 container with nothing valuable in it, and don't put secrets in files the bot user can read.
+
+**Web search:** works with no setup (it reads DuckDuckGo's plain results page), but datacenter IPs like Render's can get
+blocked now and then. For reliable search set `TAVILY_API_KEY` (free tier at tavily.com) and he'll use that instead.
+Per person: 8 searches per 10 minutes (owner exempt). Results are treated as untrusted text.
+
+**Memes and seeing images:** `make_meme` draws the text with Pillow (font: Anton, bundled in `fonts/`, OFL licensed, so
+keep that folder in the repo). It works on gifs too. `look_at_image` sends a downscaled copy of the picture to a Groq vision
+model (`GROQ_VISION_MODEL`, default `meta-llama/llama-4-scout-17b-16e-instruct`) so he can actually rate or roast it.
+
+**Emoji reactions:** now and then he reacts to a message that wasn't aimed at him, no reply, nothing sent. Tune with
+`REACT_CHANCE` (default `0.07` per message, `0` turns it off), `REACT_COOLDOWN_SECONDS` (default 40 per channel) and
+`REACT_USE_AI` (`1` = the model picks the emoji with a tiny call, `0` = keyword rules only, zero tokens). He needs the
+Add Reactions and Read Message History permissions; without them he just skips.
 
 Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`, `RUN_PYTHON_OWNER_ONLY`,
 `RUN_PYTHON_MEM_MB` (default 600), `REPLY_TIMEOUT_SECONDS` (default 90),

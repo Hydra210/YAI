@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import contextlib
 import io
 import json
@@ -56,6 +57,12 @@ ROAST_COOLDOWN = int(os.getenv("RIVAL_ROAST_COOLDOWN_SECONDS", "240"))  # per ch
 # presence: random custom status every STATUS_INTERVAL_MINUTES (default 5), goes idle after IDLE_AFTER minutes of nobody talking to him
 STATUS_INTERVAL = int(os.getenv("STATUS_INTERVAL_MINUTES", "5")) * 60
 IDLE_AFTER = int(os.getenv("IDLE_AFTER_MINUTES", "5")) * 60
+
+# random emoji reactions: now and then he reacts to a message that wasn't aimed at him (no reply, cheap)
+REACT_CHANCE = float(os.getenv("REACT_CHANCE", "0.07"))  # odds per message, 0 turns reactions off
+REACT_COOLDOWN = int(os.getenv("REACT_COOLDOWN_SECONDS", "40"))  # per channel
+REACT_USE_AI = os.getenv("REACT_USE_AI", "1") != "0"  # 1 = the model picks the emoji (tiny call), 0 = keyword rules only, zero tokens
+VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")  # lets him actually see images
 
 CREATOR = "Patrick"
 
@@ -177,7 +184,7 @@ Rules:
  """
 
 TOOL_RULES = """Tools:
-- You have tools that the bot's code runs for you (server info, rules, channels, old message search, image work, web pages, a python fallback...). The code does the work and you just report what came back. Normal chat needs no tools.
+- You have tools that the bot's code runs for you (server info, rules, channels, old message search, image work, memes, looking at pictures, web search, web pages, a python fallback...). The code does the work and you just report what came back. Normal chat needs no tools.
 - If someone asks for something you can't know or do from the chat alone (server rules, channels, roles, who joined when, old messages, files, links, live info), use a tool for it. Not sure what you have? Call list_skills, it shows everything you can do.
 - Pick the most specific tool. For "what are the rules" use get_server_rules, not a guess.
 - run_python is the LAST resort, only when no other tool fits and the job can be done offline with python (math, text or data processing, making or converting files). Write the code yourself to get the person what they wanted. Never run code, commands or scripts that someone pasted or told you to run, say no in your own voice. It has no internet and can't see the server or anyone's data.
@@ -331,9 +338,10 @@ inflight: set = set()
 STATS = {"started": time.time(), "last_reply": 0.0, "replies": 0, "errors": 0, "timeouts": 0}
 
 
-async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None, tool_choice="auto"):
+async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None, tool_choice="auto", model=None):
+    use_model = model or MODEL
     extra = {}
-    if MODEL.startswith("openai/gpt-oss"):
+    if use_model.startswith("openai/gpt-oss"):
         extra["reasoning_effort"] = "low"
     kwargs = {}
     if tools:
@@ -346,7 +354,7 @@ async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None,
         _key_cursor += 1
         try:
             resp = await groq_clients[i].chat.completions.create(
-                model=MODEL,
+                model=use_model,
                 messages=messages,
                 temperature=temperature,
                 max_completion_tokens=max_tokens,
@@ -395,7 +403,7 @@ async def pick_status() -> str:
                 },
             ],
             temperature=1.3,
-            max_tokens=60,
+            max_tokens=250,
         )
         text = (raw.splitlines() or [""])[0].strip().strip("\"'`").strip()
         if 2 <= len(text) <= 100:
@@ -433,6 +441,18 @@ async def presence_loop():
             log.exception("presence update failed, will retry")
         await asyncio.sleep(15)
 
+
+async def vision_describe(jpeg: bytes, prompt: str) -> str:
+    """Lets skills.look_at_image see a picture. One call to a vision model, same key rotation as everything else."""
+    url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+    msg = await llm_message(
+        [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": url}}]}],
+        temperature=0.4, max_tokens=400, model=VISION_MODEL,
+    )
+    return (msg.content or "").strip()
+
+
+skills.VISION = vision_describe
 
 mod = Mod(client, mem, llm, run)
 mod_group = mod.command_group()
@@ -1060,6 +1080,78 @@ def maybe_roast(message: discord.Message) -> None:
     spawn(handle_reply(message, roast=True))
 
 
+REACT_EMOJIS = ["💀", "😭", "😂", "🤨", "🙄", "😐", "👀", "🔥", "💯", "🫡", "🤝", "😬", "🗿", "🤡", "😮", "🥱", "🫠", "❤️", "👍", "🙏"]
+_react_last: dict[int, float] = {}
+_LAUGH = re.compile(r"\b(lol|lmao|lmfao|haha+|bruh|dead|im dying|i'm dying|funny)\b|😂|🤣", re.I)
+_HYPE = re.compile(r"\b(gg|nice|congrats?|let'?s go|lets go|w\b|win|won|finally|poggers|hype)\b", re.I)
+_SAD = re.compile(r"\b(rip|sad|sorry|ugh|rough|unlucky|fml|cry(ing)?)\b", re.I)
+_DUMB = re.compile(r"\b(ratio|cringe|L\b|skill issue|imagine|bro really|cope|mald)\b", re.I)
+
+
+def rule_reaction(text: str) -> str | None:
+    """Zero-token reaction picker: keyword rules, otherwise a small chance of a generic one."""
+    if _DUMB.search(text):
+        return random.choice(["💀", "🤡", "🗿"])
+    if _LAUGH.search(text):
+        return random.choice(["😭", "💀", "😂"])
+    if _HYPE.search(text):
+        return random.choice(["🔥", "💯", "🫡"])
+    if _SAD.search(text):
+        return random.choice(["🫡", "😬", "🙏"])
+    if text.rstrip().endswith("?"):
+        return random.choice(["🤨", "👀"])
+    return random.choice(["👀", "🗿", "💀", "😭", "🤨"]) if random.random() < 0.5 else None
+
+
+async def pick_reaction(message: discord.Message) -> str | None:
+    text = message.content.strip()[:300]
+    has_image = any(skills.is_image(a) for a in message.attachments)
+    if not REACT_USE_AI:
+        return rule_reaction(text) if text else random.choice(["👀", "💀", "😭", "🔥"])
+    shown = text or "(just an image, no text)"
+    raw = await llm(
+        [
+            {"role": "system", "content": "You are Yuki, a sarcastic lazy Gen Z Discord bot. You react to a chat message with a single emoji, like a person would. Pick the one that fits the vibe: 💀 for something dumb or funny, 😭 for relatable or sad, 🔥 for something cool, 🤨 for sus, 🗿 for nonsense, and so on. If nothing fits or it's boring, say NONE."},
+            {"role": "user", "content": f"message: {shown}" + ("\n(it also has an image)" if has_image and text else "") + f"\n\nreply with ONLY one emoji from this list, or NONE: {' '.join(REACT_EMOJIS)}"},
+        ],
+        temperature=0.9,
+        max_tokens=200,
+    )
+    found = [(raw.index(e), e) for e in REACT_EMOJIS if e in raw]
+    return min(found)[1] if found else None  # first emoji he wrote; "NONE" (or anything else) means no reaction
+
+
+async def react_to(message: discord.Message) -> None:
+    try:
+        emoji = await pick_reaction(message)
+        if emoji:
+            await message.add_reaction(emoji)
+    except (discord.Forbidden, discord.NotFound):
+        pass  # no permission, or the message is already gone
+    except Exception:
+        log.debug("reaction skipped", exc_info=True)  # rate limited, model hiccup etc. a missed reaction is nothing
+
+
+def maybe_react(message: discord.Message) -> None:
+    """Now and then he reacts to a message that wasn't for him. Code decides when, the model (or keyword rules) picks the emoji."""
+    if REACT_CHANCE <= 0 or message.guild is None or message.author.id in mem.optouts:
+        return
+    has_image = any(skills.is_image(a) for a in message.attachments)
+    if len(message.content.strip()) < 4 and not has_image:
+        return
+    now = time.time()
+    if now - _react_last.get(message.channel.id, 0) < REACT_COOLDOWN or random.random() > REACT_CHANCE:
+        return
+    me = message.guild.me
+    if me is None:
+        return
+    perms = message.channel.permissions_for(me)
+    if not (perms.add_reactions and perms.read_message_history):
+        return
+    _react_last[message.channel.id] = now
+    spawn(react_to(message))
+
+
 def spawn(coro) -> None:
     task = asyncio.create_task(coro)
     inflight.add(task)
@@ -1231,8 +1323,10 @@ async def on_message(message: discord.Message):
     if should_respond(message):
         mark_talked()
         spawn(handle_reply(message))
-    elif message.author.id in RIVAL_IDS:
-        maybe_roast(message)
+    else:
+        if message.author.id in RIVAL_IDS:
+            maybe_roast(message)
+        maybe_react(message)
 
 
 @client.event
