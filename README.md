@@ -121,7 +121,7 @@ Everything Yuki knows about himself lives in `about.py`: the `VERSION`, a one-li
 and `about_yuki` ("what can you do", "what are your commands"). He puts it in his own words, and he only claims what is written there. Anyone can also use
 `/about` (what's new, what he can do, commands, moderation, memory, version). The version also shows in the startup log and at `/status`.
 
-**When you ship something:** bump `VERSION` / `VERSION_DATE` / `VERSION_NOTE` and add a new entry at the **top** of `CHANGELOG` in `about.py`.
+**When you ship something:** bump `VERSION` (always `1.MAJOR.MINOR.PATCH`, e.g. `1.15.0.0`) / `VERSION_DATE` / `VERSION_NOTE` and add a new entry at the **top** of `CHANGELOG` in `about.py`.
 If you add a feature, add a line to the matching `ABOUT` note too, or he won't know to mention it.
 
 ## Skills (tools)

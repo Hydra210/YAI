@@ -2,6 +2,8 @@
 
 This is the one place to edit when you ship something:
   1. bump VERSION (and VERSION_NOTE, the one-liner shown next to it)
+     version format is always 1.MAJOR.MINOR.PATCH, four numbers (e.g. 1.15.0.0): bump MAJOR for big releases, MINOR for new features,
+     PATCH for small fixes, and reset the numbers to its right to 0
   2. add a new entry at the TOP of CHANGELOG
 Yuki reads this through the `whats_new` and `about_yuki` skills (so he can answer "what's new" / "what can you do" in
 his own words), and people can see it with `/about`. Keep entries short and factual: he only knows what is written here,
@@ -10,14 +12,14 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.1.0"
+VERSION = "1.15.0.0"
 VERSION_DATE = "2026-10-25"
 VERSION_NOTE = "channels yuki never moderates, better statuses, search that doesn't get blocked, and this update log"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
     {
-        "version": "1.1.0",
+        "version": "1.15.0.0",
         "date": "2026-10-25",
         "title": "channel exceptions, statuses, search, update log",
         "changes": [
@@ -33,9 +35,9 @@ CHANGELOG = [
         ],
     },
     {
-        "version": "1.0.0",
+        "version": "earlier",
         "date": "",
-        "title": "everything before the update log existed",
+        "title": "everything before 1.15.0.0 and the update log",
         "changes": [
             "talks when mentioned, with `/yuki`, in DMs, or when a message starts with \"yuki\".",
             "remembers each server in a database: searches old messages, keeps notes on people and servers, learns how each person talks.",
@@ -103,7 +105,8 @@ def format_changelog(count: int = 1, limit: int = 2300) -> str:
     count = max(1, min(int(count or 1), len(CHANGELOG)))
     parts = [f"current version: {version_line()}"]
     for e in CHANGELOG[:count]:
-        head = f"v{e['version']}" + (f" ({e['date']})" if e.get("date") else "") + f": {e['title']}"
+        v = e["version"]
+        head = (f"v{v}" if v[:1].isdigit() else v) + (f" ({e['date']})" if e.get("date") else "") + f": {e['title']}"
         parts.append(head + "\n" + "\n".join(f"- {c}" for c in e["changes"]))
     return "\n\n".join(parts)[:limit]
 
