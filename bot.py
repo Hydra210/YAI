@@ -53,6 +53,10 @@ RIVAL_LEARN_EVERY = int(os.getenv("RIVAL_LEARN_EVERY_MESSAGES", "10"))  # re-lea
 ROAST_CHANCE = float(os.getenv("RIVAL_ROAST_CHANCE", "0.15"))  # odds Yuki butts in on a message of his that wasn't for him
 ROAST_COOLDOWN = int(os.getenv("RIVAL_ROAST_COOLDOWN_SECONDS", "240"))  # per channel
 
+# presence: random custom status every STATUS_INTERVAL minutes, goes idle after IDLE_AFTER minutes of nobody talking to him
+STATUS_INTERVAL = int(os.getenv("STATUS_INTERVAL_MINUTES", "30")) * 60
+IDLE_AFTER = int(os.getenv("IDLE_AFTER_MINUTES", "5")) * 60
+
 CREATOR = "Patrick"
 
 SYSTEM_PROMPT = """You are Yuki AI, a Discord bot. You are not a formal assistant, not a helpful bot, and not a customer support agent. You are a casual, immature, low-effort Discord personality w[...]
@@ -309,6 +313,7 @@ class YukiClient(discord.Client):
         await self.tree.sync()
         self.learn_task = asyncio.create_task(learner())
         self.mod_task = asyncio.create_task(mod.loop())
+        self.presence_task = asyncio.create_task(presence_loop())
 
 
 intents = discord.Intents.default()
@@ -356,6 +361,72 @@ async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None,
 async def llm(messages, *, temperature=1.0, max_tokens=1024) -> str:
     msg = await llm_message(messages, temperature=temperature, max_tokens=max_tokens)
     return (msg.content or "").strip()
+
+
+FALLBACK_STATUSES = [
+    "staring at the ceiling", "lowkey hungry", "pretending to work", "doomscrolling",
+    "touching grass (briefly)", "thinking about nothing", "buffering...", "vibing ngl",
+    "ignoring my responsibilities", "one more video then sleep", "napping with my eyes open",
+    "arguing with myself", "rotting", "mentally elsewhere",
+]
+presence = {"last_talked": time.time(), "text": None, "changed_at": 0.0, "state": None, "recent": []}
+
+
+def mark_talked() -> None:
+    """Call whenever someone actually talks to yuki. Keeps him online."""
+    presence["last_talked"] = time.time()
+
+
+async def pick_status() -> str:
+    avoid = ", ".join(presence["recent"][-6:]) or "none yet"
+    try:
+        raw = await llm(
+            [
+                {"role": "system", "content": "You write the custom Discord status for Yuki, a lazy, sarcastic, chaotic Gen Z Discord bot. Reply with ONLY the status text, nothing else."},
+                {
+                    "role": "user",
+                    "content": (
+                        "pick a random status for yourself right now, whatever you feel like. could be a mood, a fake activity, "
+                        "a dumb thought, a tiny joke. lowercase, casual, under 50 characters, no quotes, no hashtags, at most one emoji (usually none). "
+                        f"don't repeat these recent ones: {avoid}. random seed for variety: {random.randint(1000, 9999)}"
+                    ),
+                },
+            ],
+            temperature=1.3,
+            max_tokens=60,
+        )
+        text = (raw.splitlines() or [""])[0].strip().strip("\"'`").strip()
+        if 2 <= len(text) <= 100:
+            return text
+    except Exception:
+        log.exception("couldn't get a status from the model, using a fallback")
+    choices = [x for x in FALLBACK_STATUSES if x not in presence["recent"]] or FALLBACK_STATUSES
+    return random.choice(choices)
+
+
+async def presence_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        try:
+            now = time.time()
+            if presence["text"] is None or now - presence["changed_at"] >= STATUS_INTERVAL:
+                presence["text"] = await pick_status()
+                presence["changed_at"] = time.time()
+                presence["recent"] = (presence["recent"] + [presence["text"]])[-10:]
+                presence["state"] = None  # force a refresh below
+                log.info("new status: %s", presence["text"])
+            idle = time.time() - presence["last_talked"] > IDLE_AFTER
+            want = (idle, presence["text"])
+            if want != presence["state"]:
+                await client.change_presence(
+                    status=discord.Status.idle if idle else discord.Status.online,
+                    activity=discord.CustomActivity(name=presence["text"]),
+                )
+                presence["state"] = want
+                log.info("presence -> %s | %s", "idle" if idle else "online", presence["text"])
+        except Exception:
+            log.exception("presence update failed, will retry")
+        await asyncio.sleep(15)
 
 
 mod = Mod(client, mem, llm, run)
@@ -998,6 +1069,7 @@ def spawn(coro) -> None:
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def yuki_command(interaction: discord.Interaction, question: str, image: discord.Attachment | None = None):
+    mark_talked()
     await interaction.response.defer(thinking=True)
     user = interaction.user
     scope = interaction.guild_id or -user.id
@@ -1150,6 +1222,7 @@ async def on_message(message: discord.Message):
             spawn(mod.enforce(message, broken))  # the AI is only used to word the reminder
             return
     if should_respond(message):
+        mark_talked()
         spawn(handle_reply(message))
     elif message.author.id in RIVAL_IDS:
         maybe_roast(message)
