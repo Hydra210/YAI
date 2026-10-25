@@ -12,12 +12,20 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.15.1.0"
+VERSION = "1.15.1.1"
 VERSION_DATE = "2026-10-25"
-VERSION_NOTE = "staff can turn his random emoji reactions off, plus no more random rule quotes"
+VERSION_NOTE = "he always knows his real version number now"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {
+        "version": "1.15.1.1",
+        "date": "2026-10-25",
+        "title": "version fix",
+        "changes": [
+            "he always knows his real version now, so he can't repeat an old number from earlier in the chat or guess one.",
+        ],
+    },
     {
         "version": "1.15.1.0",
         "date": "2026-10-25",
