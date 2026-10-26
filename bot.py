@@ -245,10 +245,25 @@ async def start_web_server():
             "last_reply_s_ago": round(now - STATS["last_reply"]) if STATS["last_reply"] else None,
         })
 
+    def keys_allowed(request) -> bool:
+        return not KEYS_PAGE_TOKEN or request.query.get("token") == KEYS_PAGE_TOKEN
+
+    async def keys_page(request):
+        if not keys_allowed(request):
+            return web.Response(status=401, text="wrong or missing ?token=")
+        return web.FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "keys.html"))
+
+    async def keys_json(request):
+        if not keys_allowed(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return web.json_response(await key_report(fresh=request.query.get("fresh") == "1"))
+
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
     app.router.add_get("/status", status)
+    app.router.add_get("/keys", keys_page)
+    app.router.add_get("/keys.json", keys_json)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
@@ -284,6 +299,58 @@ log.info("loaded %d groq key(s): %s", len(groq_clients), ", ".join(f"#{n} (...{k
 def key_tag(i: int) -> str:
     """How a key shows up in the logs: its position in GROQ_API_KEYS and its last 4 characters (never the whole key)."""
     return f"groq key #{i + 1} (...{GROQ_KEYS[i][-4:]})"
+
+
+# ---- /keys page: which Groq keys work right now ------------------------------------------------------------------------
+KEYS_PAGE_TOKEN = (os.getenv("KEYS_PAGE_TOKEN") or "").strip()  # optional: when set, /keys needs ?token=<this>
+KEYS_CACHE_SECONDS = 60  # one real check per minute at most, however many people open the page
+_key_cache: dict = {"ts": 0.0, "data": None}
+_key_cache_lock = asyncio.Lock()
+
+
+async def check_key(i: int) -> dict:
+    """One tiny real request with this key (a few tokens), so 'working' means it can really answer right now."""
+    started = time.time()
+    status = "ok"
+    try:
+        extra = {"reasoning_effort": "low"} if MODEL.startswith("openai/gpt-oss") else {}
+        await asyncio.wait_for(
+            groq_clients[i].chat.completions.create(
+                model=MODEL, messages=[{"role": "user", "content": "hi"}], max_completion_tokens=16, extra_body=extra,
+            ),
+            timeout=20,
+        )
+    except asyncio.TimeoutError:
+        status = "timeout"
+    except RateLimitError:
+        status = "limited"
+    except AuthenticationError:
+        status = "invalid"
+    except NotFoundError:
+        status = "model"
+    except BadRequestError as e:
+        status = "restricted" if "organization_restricted" in str(e) else "error"
+    except Exception as e:
+        status = "restricted" if "organization_restricted" in str(e) else "invalid" if getattr(e, "status_code", None) in (401, 403) else "error"
+    return {"n": i + 1, "last4": GROQ_KEYS[i][-4:], "status": status, "ms": round((time.time() - started) * 1000)}
+
+
+async def key_report(fresh: bool = False) -> dict:
+    async with _key_cache_lock:
+        now = time.time()
+        age = now - _key_cache["ts"]
+        # "refresh" skips the cache, but never more than once every 10 seconds
+        if _key_cache["data"] is None or age >= KEYS_CACHE_SECONDS or (fresh and age >= 10):
+            keys = await asyncio.gather(*(check_key(i) for i in range(len(groq_clients))))
+            _key_cache["ts"] = time.time()
+            _key_cache["data"] = {
+                "working": sum(1 for k in keys if k["status"] == "ok"),
+                "total": len(keys),
+                "model": MODEL,
+                "checked_at": _key_cache["ts"],
+                "keys": list(keys),
+            }
+        return _key_cache["data"]
 
 
 async def run(fn, *args):

@@ -236,6 +236,14 @@ cp .env.example .env   # then fill in your tokens
 python bot.py
 ```
 
+## Key status page (`/keys`)
+
+Open `https://<your-render-url>/keys` to see how many Groq keys work out of how many, with a status next to each key (shown only as its number and
+last 4 characters): *working*, *rate limited*, *invalid key*, *restricted*, *model not found*, *timed out*. Each check sends one tiny real request
+per key, so "working" means it can actually answer right now. Results are cached for 60 seconds (the refresh button re-checks, at most every 10 s),
+and the page re-checks by itself every minute. The same data is at `/keys.json`.
+Anyone with the link can open it, so to lock it set `KEYS_PAGE_TOKEN` and use `/keys?token=<that value>`.
+
 ## Environment variables
 
 | Name | Required | Description |
@@ -251,6 +259,7 @@ python bot.py
 | `RIVAL_ROAST_COOLDOWN_SECONDS` | no | Min seconds between those, per channel (default `240`) |
 | `MOD_LINK_ALLOW` | no | Extra domains the link rule allows, comma separated (gifs and Discord links are always allowed) |
 | `MOD_EXTRA_BLOCKED` | no | Extra banned words, comma separated (counted as the slur category) |
+| `KEYS_PAGE_TOKEN` | no | Password for the `/keys` status page (open it as `/keys?token=...`). Empty = anyone with the link can see it. |
 | `SLANG_CHANCE` | no | Share (0-1) of messages Yuki looks at when learning slang, `0` turns it off everywhere (default `0.12`). More knobs in *Learning slang*. |
 | `MEMORY_RETENTION_DAYS` | no | How long raw messages are kept (default `90`) |
 | `LEARN_INTERVAL_SECONDS` | no | Min seconds between background learning calls (default `45`) |

@@ -26,6 +26,7 @@ CHANGELOG = [
             "if Groq says one of his keys belongs to a restricted organization, he now skips it and tries the next key instead of "
             "giving up with the 'model is gone' message. if every key is restricted he still can't answer, that has to be fixed with Groq.",
             "the logs now say which key (its number in GROQ_API_KEYS and its last 4 characters) hit a Groq error, and list all keys at startup.",
+            "there's a `/keys` web page on his server that lists every Groq key with a status (working, rate limited, invalid, restricted) and how many work out of how many.",
         ],
     },
     {

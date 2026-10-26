@@ -49,3 +49,5 @@ services:
         value: "0"        # "1" = only OWNER_ID can trigger it
       - key: REPLY_TIMEOUT_SECONDS
         value: "90"
+      - key: KEYS_PAGE_TOKEN
+        sync: false   # optional: set a password, then open /keys?token=<it>
