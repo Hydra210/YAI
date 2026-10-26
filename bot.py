@@ -251,7 +251,7 @@ async def start_web_server():
     async def keys_page(request):
         if not keys_allowed(request):
             return web.Response(status=401, text="wrong or missing ?token=")
-        return web.FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "keys.html"))
+        return web.Response(text=KEYS_HTML, content_type="text/html")
 
     async def keys_json(request):
         if not keys_allowed(request):
@@ -267,7 +267,7 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    log.info("health server listening on port %s", PORT)
+    log.info("health server listening on port %s (key status page: /keys, version %s)", PORT, about.VERSION)
 
 
 _reload_runtime_settings()
@@ -304,6 +304,105 @@ def key_tag(i: int) -> str:
 # ---- /keys page: which Groq keys work right now ------------------------------------------------------------------------
 KEYS_PAGE_TOKEN = (os.getenv("KEYS_PAGE_TOKEN") or "").strip()  # optional: when set, /keys needs ?token=<this>
 KEYS_CACHE_SECONDS = 60  # one real check per minute at most, however many people open the page
+KEYS_HTML = r'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yuki keys</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #000; color: #fff;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 48px 20px;
+  }
+  main { width: 100%; max-width: 560px; }
+  .top { display: flex; justify-content: space-between; align-items: center; color: #888; font-size: 14px; letter-spacing: .04em; }
+  h1 { font-size: 14px; font-weight: 500; margin: 0; text-transform: lowercase; color: #fff; }
+  button {
+    background: none; color: #fff; border: 1px solid #333; border-radius: 999px;
+    padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: #fff; }
+  button:disabled { color: #666; cursor: default; border-color: #222; }
+  .count { font-size: 72px; font-weight: 600; letter-spacing: -.03em; margin: 40px 0 4px; line-height: 1; }
+  .count span { color: #555; }
+  .sub { color: #888; font-size: 14px; margin-bottom: 36px; }
+  ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid #1c1c1c; }
+  li { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid #1c1c1c; }
+  .n { color: #555; width: 28px; font-size: 14px; }
+  .key { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 15px; flex: 1; }
+  .ms { color: #555; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 14px; min-width: 120px; justify-content: flex-end; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #666; }
+  .ok .dot { background: #3ddc84; }
+  .warn .dot { background: #ffb020; }
+  .bad .dot { background: #ff4d4f; }
+  .msg { color: #888; font-size: 14px; padding: 24px 0; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><h1>yuki / api keys</h1><button id="refresh">refresh</button></div>
+  <div class="count" id="count">–<span> / –</span></div>
+  <div class="sub" id="sub">checking...</div>
+  <ul id="list"></ul>
+  <div class="msg" id="msg" hidden></div>
+</main>
+<script>
+  const params = new URLSearchParams(location.search);
+  const token = params.get("token");
+  const $ = (id) => document.getElementById(id);
+  const LABELS = { ok: "working", limited: "rate limited", invalid: "invalid key", restricted: "restricted", model: "model not found", timeout: "timed out", error: "error" };
+  const CLASS = { ok: "ok", limited: "warn", timeout: "warn" };
+
+  async function load(force) {
+    const btn = $("refresh");
+    btn.disabled = true; btn.textContent = "checking...";
+    $("msg").hidden = true;
+    try {
+      const url = "keys.json" + "?" + new URLSearchParams({ ...(token ? { token } : {}), ...(force ? { fresh: "1" } : {}) });
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.status === 401) throw new Error("wrong or missing ?token=");
+      if (!res.ok) throw new Error("server said " + res.status);
+      render(await res.json());
+    } catch (e) {
+      $("sub").textContent = "";
+      $("msg").textContent = "couldn't load: " + e.message;
+      $("msg").hidden = false;
+    } finally {
+      btn.disabled = false; btn.textContent = "refresh";
+    }
+  }
+
+  function render(d) {
+    $("count").replaceChildren(document.createTextNode(String(d.working)), Object.assign(document.createElement("span"), { textContent: " / " + d.total }));
+    const age = Math.max(0, Math.round(Date.now() / 1000 - d.checked_at));
+    $("sub").textContent = "keys working · model " + d.model + " · checked " + (age < 5 ? "just now" : age + "s ago");
+    const list = $("list");
+    list.replaceChildren();
+    for (const k of d.keys) {
+      const li = document.createElement("li");
+      const n = Object.assign(document.createElement("span"), { className: "n", textContent: "#" + k.n });
+      const key = Object.assign(document.createElement("span"), { className: "key", textContent: "…" + k.last4 });
+      const ms = Object.assign(document.createElement("span"), { className: "ms", textContent: k.ms != null ? k.ms + " ms" : "" });
+      const st = document.createElement("span");
+      st.className = "status " + (CLASS[k.status] || "bad");
+      st.append(Object.assign(document.createElement("span"), { className: "dot" }), document.createTextNode(LABELS[k.status] || k.status));
+      li.append(n, key, ms, st);
+      list.append(li);
+    }
+  }
+
+  $("refresh").addEventListener("click", () => load(true));
+  load(false);
+  setInterval(() => load(false), 60000);
+</script>
+</body>
+</html>
+'''  # the /keys page lives in here on purpose: one file less that can go missing in a deploy
 _key_cache: dict = {"ts": 0.0, "data": None}
 _key_cache_lock = asyncio.Lock()
 
