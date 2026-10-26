@@ -278,7 +278,12 @@ groq_clients = [
     for k in GROQ_KEYS
 ]
 _key_cursor = 0
-log.info("loaded %d groq key(s)", len(groq_clients))
+log.info("loaded %d groq key(s): %s", len(groq_clients), ", ".join(f"#{n} (...{k[-4:]})" for n, k in enumerate(GROQ_KEYS, 1)))
+
+
+def key_tag(i: int) -> str:
+    """How a key shows up in the logs: its position in GROQ_API_KEYS and its last 4 characters (never the whole key)."""
+    return f"groq key #{i + 1} (...{GROQ_KEYS[i][-4:]})"
 
 
 async def run(fn, *args):
@@ -338,8 +343,20 @@ async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None,
             )
             return resp.choices[0].message
         except (RateLimitError, AuthenticationError) as e:
-            log.warning("groq key #%d (...%s) failed: %s, trying the next one", i + 1, GROQ_KEYS[i][-4:], type(e).__name__)
+            log.warning("%s failed: %s, trying the next one", key_tag(i), type(e).__name__)
             last_err = e
+        except BadRequestError as e:
+            if "organization_restricted" not in str(e):
+                log.warning("%s got a bad request from Groq (model %s): %s", key_tag(i), use_model, str(e)[:300])
+                raise  # a real bad request (malformed tool call etc.): the next key won't help
+            # Groq restricted the account behind THIS key. other keys may belong to a different account, so try them
+            log.warning("%s belongs to a RESTRICTED Groq organization, trying the next one", key_tag(i))
+            last_err = e
+        except NotFoundError as e:
+            log.warning("%s: Groq says model %s was not found: %s", key_tag(i), use_model, str(e)[:300])
+            raise
+    if last_err is not None and len(groq_clients) > 1:
+        log.error("all %d groq keys failed, the last error was %s", len(groq_clients), type(last_err).__name__)
     raise last_err
 
 

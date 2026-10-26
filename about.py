@@ -12,12 +12,22 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.16.0.0"
+VERSION = "1.16.0.1"
 VERSION_DATE = "2026-10-26"
-VERSION_NOTE = "he learns slang now: he asks what words mean, and staff can switch it with /slang"
+VERSION_NOTE = "he learns slang now, and a restricted groq key no longer takes him down"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {
+        "version": "1.16.0.1",
+        "date": "2026-10-26",
+        "title": "restricted groq key fix",
+        "changes": [
+            "if Groq says one of his keys belongs to a restricted organization, he now skips it and tries the next key instead of "
+            "giving up with the 'model is gone' message. if every key is restricted he still can't answer, that has to be fixed with Groq.",
+            "the logs now say which key (its number in GROQ_API_KEYS and its last 4 characters) hit a Groq error, and list all keys at startup.",
+        ],
+    },
     {
         "version": "1.16.0.0",
         "date": "2026-10-26",
