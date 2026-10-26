@@ -21,8 +21,12 @@ services:
         value: openai/gpt-oss-120b
       - key: DATABASE_URL
         sync: false
-      - key: DATABASE_PATH
-        value: yuki.db
+      - key: RIVAL_USER_IDS
+        value: "1520484620129402992"
+      - key: RIVAL_ROAST_CHANCE
+        value: "0.15"
+      - key: RIVAL_LEARN_EVERY_MESSAGES
+        value: "10"
       - key: MEMORY_RETENTION_DAYS
         value: "90"
       - key: LEARN_INTERVAL_SECONDS

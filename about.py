@@ -79,7 +79,7 @@ CHANGELOG = [
 
 ABOUT = {
     "overview": (
-        "yuki is a lazy, sarcastic discord bot that uses ai for everything. he reads a lot of what's said in a server, remembers it, "
+        "yuki is a super casual discord bot that uses ai for everything and talks like his creator. he reads a lot of what's said in a server, remembers it, "
         "and has real tools for looking stuff up. now and then he reacts to a message with an emoji (staff can turn that off with `/mod setting`). people can @mention him, use /yuki, dm him, or start a message with 'yuki'."
     ),
     "talk": (
@@ -115,7 +115,7 @@ ABOUT = {
         "deleted ones are removed. `/memory forget` wipes your stuff. rule-break records only keep what and when, not the message text."
     ),
     "limits": (
-        "limits: he can be wrong, he's lazy on purpose, his image vision is basic, his rule checks are heuristics, "
+        "limits: he can be wrong, his image vision is basic, his rule checks are heuristics, "
         "and web search depends on the sources the owner set up."
     ),
 }

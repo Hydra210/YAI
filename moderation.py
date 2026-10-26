@@ -34,7 +34,7 @@ from textcheck import analyze_harassment, find_links, has_hate_slur, has_persona
 log = logging.getLogger("yuki.mod")
 
 # rule categories the bot's code can spot by itself -> what the AI is told each one means when tagging rules
-RULES_SCHEMA = 2  # bump when the rule categories change, so rules get re-tagged once
+RULES_SCHEMA = 3  # bump when the rule categories change, so rules get re-tagged once
 
 CATEGORIES = {
     "slur": "slurs, racism, hate speech, the n-word, discrimination, bigoted or hateful language",
@@ -99,6 +99,10 @@ GENERIC_RULES["profanity"] = {"n": 0, "text": "that word isn't allowed here", "c
 HARASS_RULE_HINT = re.compile(r"harass|bull|toxic|insult|disrespect|respect|kind|nice|attack|abus|personal|treat|decen|civil", re.I)
 SLUR_RULE_HINT = re.compile(r"slur|hate|racis|racial|discriminat|offensive|bigot|n-?word|toxic|harass|respect|slang", re.I)
 
+_REALLY_ABOUT = {
+    "harassment": re.compile(r"harass|bull|toxic|insult|disrespect|respect|kind|nice|attack|abus|threat|treat|decen|civil|drama|flam|hostil", re.I),
+    "slur": re.compile(r"slur|hate|racis|racial|discriminat|offensive|bigot|n-?word|homophob|transphob|sexis", re.I),
+}
 RULES_STRONG = re.compile(r"rules?|guidelines?|code[-_ ]?of[-_ ]?conduct|\bcoc\b|terms|tos\b", re.I)
 RULES_WEAK = re.compile(r"info|welcome|read[-_ ]?me|start[-_ ]?here|faq|about|server[-_ ]?guide", re.I)
 
@@ -439,19 +443,12 @@ class Mod:
         # a fallback only applies when the server has no rule for that category at all. if the staff skipped the rule, they meant it.
         # when staff exempted something and this still gets flagged (a swear or allowed slur aimed at a person), no real rule of the
         # server is the one being broken, so don't pick a "closest" one at random: use the generic wording and don't quote anything.
-        exempt = self.has_exemptions(gid)
+        # when no rule of the server is actually about slurs / bullying / threats, he still steps in, but with generic wording and
+        # NO quoted rule. he never picks a "closest" rule by keyword, that's how a threat got answered with the no-begging rule.
         if "slur" not in out and "slur" not in covered and self.settings(gid)["slur_fallback"]:
-            if exempt:
-                out["slur"] = {**GENERIC_RULES["slur"], "noquote": True}
-            else:
-                out["slur"] = next((r for r in live if SLUR_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["slur"]
+            out["slur"] = {**GENERIC_RULES["slur"], "noquote": True}
         if "harassment" not in out and "harassment" not in covered and self.settings(gid)["harass_fallback"]:
-            if exempt:
-                out["harassment"] = {**GENERIC_RULES["harassment"], "noquote": True}
-            else:
-                out["harassment"] = (
-                    next((r for r in live if HARASS_RULE_HINT.search(r.get("text", ""))), None) or GENERIC_RULES["harassment"]
-                )
+            out["harassment"] = {**GENERIC_RULES["harassment"], "noquote": True}
         return out
 
     def rule_for(self, gid: int, category: str):
@@ -599,8 +596,10 @@ class Mod:
             '"none":\n'
             f"{cats}\n"
             '- "none": anything else\n'
-            'Only use "slur" for rules about slurs, hate speech, racism or discrimination. Use "harassment" for rules about bullying, '
-            'insults, toxicity or being respectful / kind in general.\n'
+            'Be strict. Only use "slur" for rules that are literally about slurs, hate speech, racism or discrimination. Only use '
+            '"harassment" for rules that are literally about bullying, insulting, threatening or harassing other members, or being '
+            'respectful to other members. A rule about begging (for unbans, roles, staff, etc), asking for things, self promo, '
+            'alts, ban evasion, channel topics or anything else is "none" even if its tone sounds strict or polite.\n'
             'Reply with ONLY a JSON object: {"rules": [{"n": 1, "text": "...", "category": "none"}]} with at most 25 rules.'
         )
         raw = await self.llm(
@@ -630,7 +629,10 @@ class Mod:
                 n = int(r.get("n", i))
             except (TypeError, ValueError):
                 n = i
-            out.append({"n": n, "text": t, "category": c if c in CATEGORIES else "none"})
+            c = c if c in CATEGORIES else "none"
+            if c in ("harassment", "slur") and not _REALLY_ABOUT[c].search(t):
+                c = "none"  # the AI tagged it but the wording isn't about that at all: don't let it be quoted for it
+            out.append({"n": n, "text": t, "category": c})
         return out
 
     async def refresh_rules(self, guild: discord.Guild, force: bool = False) -> str:
@@ -803,7 +805,7 @@ class Mod:
             cat = "caps"
         if cat is None and "spam" in enforced:
             now = time.time()
-            q = self._flood[(gid, message.author.id)]
+            q = self._flood[(gid, message.channel.id, message.author.id)]  # per channel: same text in different channels is not spam
             sig = hashlib.md5(normalize(text).strip().encode()).hexdigest() if len(text.strip()) >= 4 else ""
             q.append((now, sig))
             burst = sum(1 for t, _ in q if now - t <= 8)
@@ -829,15 +831,15 @@ class Mod:
             + (f", and {burst} of those were in the last minute. If it's several in a row be firmer and clearly annoyed" if burst >= 3 else "")
             + ".\n"
             + ("This one is serious: say plainly that telling someone to hurt themselves, or threatening them, is never ok. " if sev >= 3 else "")
-            + "Write ONE short message (one or two sentences) telling them to stop. Casual lowercase discord voice, a little dry "
-            "or sarcastic is fine, but firm. Hard rules: never repeat, quote or hint at the exact words they used (if it was "
+            + "Write ONE short message (one or two sentences) telling them to stop. Super casual lowercase discord voice, direct, "
+            "no fluff, but firm. Hard rules: never repeat, quote or hint at the exact words they used (if it was "
             "a slur just say 'that word'); no @mentions or names; no emojis; don't threaten punishments; don't say you "
             "deleted anything. Output only the message."
         )
         try:
             out = await self.llm(
                 [
-                    {"role": "system", "content": "You are Yuki, a lazy, sarcastic Discord bot reminding someone of a rule."},
+                    {"role": "system", "content": "You are Yuki, a Discord bot who talks exactly like Patrick: super casual, direct, lowercase, no fluff. You are reminding someone of a rule."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.8,
