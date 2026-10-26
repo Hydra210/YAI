@@ -110,6 +110,24 @@ plus `remove`, `list`, `clear`. Words match with repeated letters and simple num
 (bullying) are still checked. `/mod test` uses the server's lists, so you can try a message before trusting it.
 To test it, use an account without a staff role, or turn "skip staff" off.
 
+## Learning slang
+
+Now and then, when a message has a word he doesn't know and can't work out from the chat, Yuki replies to that person and asks what it means
+("wait what does "..." mean"). Nobody has to talk to him for this: it happens on normal messages. Plain code decides *if* he looks (feature on,
+channel allowed, cooldowns over, a dice roll), then one small model call picks a term he honestly can't figure out (the usual answer is "none"),
+and the question itself is a fixed casual line written by code. When the person explains it (a reply to his question from anyone, or just the next
+message from the person he asked), a second small call turns it into a short definition and he saves it for that server. Learned words go into his
+prompt there, so he understands them from then on. He never asks about the same word twice, only has one open question per channel, skips people
+who used `/memory forget`, and never saves a definition that contains a slur.
+
+**`/slang`** (same people as `/mod`: Manage Server or whoever `/mod access` allows): `on`, `off`, `status`, `list` (everything he learned),
+`forget <word>` (remove one, he may ask about it again later), and **`channels`** `add <channel>`, `remove <channel>`, `list`, `clear` for channels
+(or whole categories, threads included) where he never asks. It is **on by default**. Saved in Postgres like the rest of his server memory.
+
+Tuning env vars: `SLANG_CHANCE` (default `0.12`: the share of messages he even looks at, `0` turns it off in every server),
+`SLANG_CHANNEL_COOLDOWN_SECONDS` (default 600 between questions in a channel), `SLANG_USER_COOLDOWN_SECONDS` (default 1800 before asking the same
+person again), `SLANG_CHECK_COOLDOWN_SECONDS` (default 30 between looks in a channel) and `SLANG_MAX_PER_DAY` (default 8 questions per server per day).
+
 ## The rival
 
 `RIVAL_USER_IDS` (default `1520484620129402992`, comma separated for more) is a running-joke feud. Yuki roasts him when replying to him, studies him much
@@ -123,7 +141,7 @@ uses `/memory forget` or sets a persona like "be nice to me" (`/persona`).
 Everything Yuki knows about himself lives in `about.py`: the `VERSION`, a one-line `VERSION_NOTE`, the `CHANGELOG` and short `ABOUT` notes
 (talking to him, memory, moderation, tools, personas, privacy, limits). Two tools read it: `whats_new` ("what's new", "any updates", "what version are you")
 and `about_yuki` ("what can you do", "what are your commands"). He puts it in his own words, and he only claims what is written there. Anyone can also use
-`/about` (what's new, what he can do, commands, moderation, memory, version). The version also shows in the startup log and at `/status`.
+`/about` (what's new, what he can do, commands, moderation, memory, slang, version). The version also shows in the startup log and at `/status`.
 
 **When you ship something:** bump `VERSION` (always `1.MAJOR.MINOR.PATCH`, e.g. `1.15.0.0`) / `VERSION_DATE` / `VERSION_NOTE` and add a new entry at the **top** of `CHANGELOG` in `about.py`.
 If you add a feature, add a line to the matching `ABOUT` note too, or he won't know to mention it.
@@ -233,6 +251,7 @@ python bot.py
 | `RIVAL_ROAST_COOLDOWN_SECONDS` | no | Min seconds between those, per channel (default `240`) |
 | `MOD_LINK_ALLOW` | no | Extra domains the link rule allows, comma separated (gifs and Discord links are always allowed) |
 | `MOD_EXTRA_BLOCKED` | no | Extra banned words, comma separated (counted as the slur category) |
+| `SLANG_CHANCE` | no | Share (0-1) of messages Yuki looks at when learning slang, `0` turns it off everywhere (default `0.12`). More knobs in *Learning slang*. |
 | `MEMORY_RETENTION_DAYS` | no | How long raw messages are kept (default `90`) |
 | `LEARN_INTERVAL_SECONDS` | no | Min seconds between background learning calls (default `45`) |
 | `LEARN_EVERY_MESSAGES` | no | New messages from a person before Yuki re-learns them (default `20`) |

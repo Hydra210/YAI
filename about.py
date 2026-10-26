@@ -12,12 +12,24 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.15.2.0"
+VERSION = "1.16.0.0"
 VERSION_DATE = "2026-10-26"
-VERSION_NOTE = "he talks like patrick now, and rule quoting and spam are fixed"
+VERSION_NOTE = "he learns slang now: he asks what words mean, and staff can switch it with /slang"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {
+        "version": "1.16.0.0",
+        "date": "2026-10-26",
+        "title": "he learns slang",
+        "changes": [
+            "now and then, when someone's message has slang he doesn't get and can't work out from the chat, he asks that person what it means. "
+            "he does it on his own, nobody has to talk to him, and only sometimes (cooldowns and a daily limit), never about the same word twice.",
+            "when someone explains it (by replying to his question, or just answering him), he saves it for that server and understands it from then on.",
+            "staff can control it with `/slang`: `on`, `off`, `status`, `list` (what he learned), `forget <word>`, and `channels` "
+            "(add, remove, list, clear) to pick channels or whole categories where he never asks. it's on by default.",
+        ],
+    },
     {
         "version": "1.15.2.0",
         "date": "2026-10-26",
@@ -97,7 +109,7 @@ ABOUT = {
     "talk": (
         "ways to talk to him: @mention him in a server, `/yuki question: ...`, dm him (he answers every dm), or start a message with 'yuki'. "
         "`/memory` shows or wipes what he knows about you, `/persona` shows or resets how he acts with you, `/meme` makes captioned images, "
-        "and `/about` shows this info."
+        "and `/about` shows this info. staff also have `/mod` and `/slang`."
     ),
     "memory": (
         "memory: he keeps messages per server in a database, searches old ones (like 'what did bob say about valorant'), and writes short "
@@ -117,6 +129,12 @@ ABOUT = {
         "look at images (rate, roast, describe), convert and resize images, make memes, tell the time, do math, search the web for news and current stuff, "
         "open links and read them. there's also a sandboxed python fallback if the owner turned it on. if he isn't sure he can do something he checks his tool list "
         "instead of guessing."
+    ),
+    "slang": (
+        "slang: every now and then, if someone's message has a word he doesn't know and can't figure out from the chat, he asks that person what it means, "
+        "even when nobody is talking to him. he only does it sometimes (a dice roll, cooldowns, a daily limit) and never asks about the same word twice. "
+        "when someone explains it he saves it for that server. staff use `/slang`: on, off, status, list (what he learned), forget (remove a word) and channels "
+        "(add, remove, list, clear) to pick channels or categories where he never asks. it's on by default. he skips people who used `/memory forget`."
     ),
     "personas": (
         "personas: tell him 'talk like a pirate', 'call me boss', 'keep it short', 'be nicer to me' and he saves it just for you. nobody else sees or gets it. "

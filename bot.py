@@ -23,6 +23,7 @@ from groq import (
 
 import about
 import skills
+import slang
 from memory import Memory
 from moderation import TIER_LABEL, Mod
 from personas import PersonaStore
@@ -471,6 +472,9 @@ mod = Mod(client, mem, llm, run)
 mod_group = mod.command_group()
 client.tree.add_command(mod_group)
 
+slang_learner = slang.Slang(client, mem, llm, run, mod)  # now and then he asks what slang means so he can learn it (/slang)
+client.tree.add_command(slang_learner.command_group())
+
 
 MEME_INTENT = re.compile(
     r"\b(caption|meme)\b.{0,30}\b(this|it|that|image|pic|picture|photo|gif|screenshot)\b"
@@ -796,6 +800,9 @@ async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, menti
     fast = mod.fast_block(scope) if scope > 0 else ""  # fast memory: rules, roles, notes. RAM only, no lookup.
     if fast:
         system += "\n\n" + fast
+    learned_slang = slang_learner.block(scope) if scope > 0 else ""  # slang people taught him in this server
+    if learned_slang:
+        system += "\n\n" + learned_slang
     system += "\n\n" + PING_RULES
     # always know the real version, so he never repeats an old number from chat history or guesses one
     system += f"\n\nYOUR VERSION: {about.VERSION}. if anyone asks what version you are, it's {about.VERSION}, even if older messages in this chat say a different number."
@@ -1409,6 +1416,7 @@ async def persona_command(interaction: discord.Interaction, action: app_commands
         app_commands.Choice(name="commands and how to talk to him", value="talk"),
         app_commands.Choice(name="moderation", value="moderation"),
         app_commands.Choice(name="memory and privacy", value="memory"),
+        app_commands.Choice(name="learning slang", value="slang"),
         app_commands.Choice(name="version", value="version"),
     ]
 )
@@ -1463,13 +1471,24 @@ async def on_message(message: discord.Message):
         if broken:
             spawn(mod.enforce(message, broken))  # the AI is only used to word the reminder
             return
+    try:
+        if await slang_learner.check_answer(message):  # someone explained a word he asked about
+            return
+    except Exception:
+        log.exception("slang answer check failed")
     if should_respond(message):
         mark_talked()
         spawn(handle_reply(message))
     else:
         if message.author.id in RIVAL_IDS:
             maybe_roast(message)
-        maybe_react(message)
+        try:
+            asking = slang_learner.maybe_ask(message)  # sometimes he asks what a word means (needs no one to talk to him)
+        except Exception:
+            asking = False
+            log.exception("slang check failed")
+        if not asking:
+            maybe_react(message)
 
 
 @client.event
