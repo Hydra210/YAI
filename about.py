@@ -12,12 +12,24 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.15.1.1"
-VERSION_DATE = "2026-10-25"
-VERSION_NOTE = "he always knows his real version number now"
+VERSION = "1.15.2.0"
+VERSION_DATE = "2026-10-26"
+VERSION_NOTE = "he talks like patrick now, and rule quoting and spam are fixed"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {
+        "version": "1.15.2.0",
+        "date": "2026-10-26",
+        "title": "new default voice, smarter rule quoting, per-channel spam",
+        "changes": [
+            "his default voice is now super casual, like how patrick types, instead of the old lazy sarcastic act. "
+            "personas people set with him still win for that person.",
+            "he only quotes a rule when a rule is really about what happened. if nothing covers it (like a threat when there's no rule "
+            "for it) he still steps in but doesn't quote some random rule. rules get re-read once so they're tagged stricter.",
+            "spam is counted per channel now, so saying the same thing in different channels doesn't count as spam.",
+        ],
+    },
     {
         "version": "1.15.1.1",
         "date": "2026-10-25",
