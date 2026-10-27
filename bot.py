@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import contextlib
+import hmac
 import io
 import json
 import logging
@@ -245,18 +246,37 @@ async def start_web_server():
             "last_reply_s_ago": round(now - STATS["last_reply"]) if STATS["last_reply"] else None,
         })
 
-    def keys_allowed(request) -> bool:
-        return not KEYS_PAGE_TOKEN or request.query.get("token") == KEYS_PAGE_TOKEN
+    def request_token(request) -> str:
+        return request.headers.get("X-Keys-Token") or request.query.get("token") or ""
 
-    async def keys_page(request):
-        if not keys_allowed(request):
-            return web.Response(status=401, text="wrong or missing ?token=")
-        return web.Response(text=KEYS_HTML, content_type="text/html")
+    def keys_allowed(request) -> bool:
+        """Viewing: open when no KEYS_PAGE_TOKEN is set, otherwise the token must match."""
+        return True if not KEYS_PAGE_TOKEN else keys_can_edit(request_token(request))
+
+    async def keys_page(_request):
+        return web.Response(text=KEYS_HTML, content_type="text/html")  # nothing secret in the page, the data behind it needs the token
 
     async def keys_json(request):
         if not keys_allowed(request):
             return web.json_response({"error": "unauthorized"}, status=401)
-        return web.json_response(await key_report(fresh=request.query.get("fresh") == "1"))
+        data = await key_report(fresh=request.query.get("fresh") == "1")
+        # "editable" is only true when a KEYS_PAGE_TOKEN is set and this visitor sent it: that is what shows the add / remove buttons
+        return web.json_response({**data, "editable": bool(KEYS_PAGE_TOKEN)})
+
+    async def keys_edit(request):
+        if not KEYS_PAGE_TOKEN:
+            return web.json_response({"error": "set KEYS_PAGE_TOKEN in Render first, adding keys needs a password"}, status=403)
+        if not keys_can_edit(request_token(request)):
+            return web.json_response({"error": "wrong token"}, status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad request"}, status=400)
+        if request.path.endswith("/add"):
+            code, out = await add_key(body.get("key"))
+        else:
+            code, out = await remove_key(body.get("n"), body.get("last4"))
+        return web.json_response(out, status=code)
 
     app = web.Application()
     app.router.add_get("/", health)
@@ -264,6 +284,8 @@ async def start_web_server():
     app.router.add_get("/status", status)
     app.router.add_get("/keys", keys_page)
     app.router.add_get("/keys.json", keys_json)
+    app.router.add_post("/keys/add", keys_edit)
+    app.router.add_post("/keys/remove", keys_edit)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
@@ -283,22 +305,34 @@ persona_store = PersonaStore(os.getenv("DATABASE_URL"), DB_PATH)
 GROQ_KEYS = list(dict.fromkeys(
     k for k in re.split(r"[,\s]+", (os.getenv("GROQ_API_KEYS") or "") + "," + (os.getenv("GROQ_API_KEY") or "")) if k
 ))
+KEY_SOURCES = ["env"] * len(GROQ_KEYS)  # parallel to GROQ_KEYS: "env" (an environment variable) or "saved" (added on the /keys page)
+# keys added on the /keys page are saved in Postgres (scope 0 = not a server) so they survive restarts and deploys
+for _k in (mem.fast_get(0, "groq_keys") or []):
+    if isinstance(_k, str) and _k and _k not in GROQ_KEYS:
+        GROQ_KEYS.append(_k)
+        KEY_SOURCES.append("saved")
 if not GROQ_KEYS:
-    raise SystemExit("set GROQ_API_KEYS (comma separated) or GROQ_API_KEY")
-groq_clients = [
-    AsyncGroq(
+    raise SystemExit("set GROQ_API_KEYS (comma separated) or GROQ_API_KEY (or add a key on the /keys page, which needs one key to start)")
+
+
+def make_client(k: str) -> AsyncGroq:
+    return AsyncGroq(
         api_key=k, timeout=float(os.getenv("GROQ_TIMEOUT_SECONDS", "40")),
         max_retries=0 if len(GROQ_KEYS) > 1 else 1,  # with spare keys, fail over instead of waiting
     )
-    for k in GROQ_KEYS
-]
+
+
+groq_clients = [make_client(k) for k in GROQ_KEYS]
 _key_cursor = 0
 log.info("loaded %d groq key(s): %s", len(groq_clients), ", ".join(f"#{n} (...{k[-4:]})" for n, k in enumerate(GROQ_KEYS, 1)))
 
 
 def key_tag(i: int) -> str:
     """How a key shows up in the logs: its position in GROQ_API_KEYS and its last 4 characters (never the whole key)."""
-    return f"groq key #{i + 1} (...{GROQ_KEYS[i][-4:]})"
+    try:
+        return f"groq key #{i + 1} (...{GROQ_KEYS[i][-4:]})"
+    except IndexError:  # the key was just removed on the /keys page
+        return f"groq key #{i + 1}"
 
 
 # ---- /keys page: which Groq keys work right now ------------------------------------------------------------------------
@@ -327,74 +361,143 @@ KEYS_HTML = r'''<!doctype html>
   }
   button:hover { border-color: #fff; }
   button:disabled { color: #666; cursor: default; border-color: #222; }
+  input {
+    flex: 1; min-width: 0; background: #0a0a0a; color: #fff; border: 1px solid #333; border-radius: 999px;
+    padding: 9px 16px; font: inherit; font-size: 14px; outline: none;
+  }
+  input:focus { border-color: #fff; }
   .count { font-size: 72px; font-weight: 600; letter-spacing: -.03em; margin: 40px 0 4px; line-height: 1; }
   .count span { color: #555; }
   .sub { color: #888; font-size: 14px; margin-bottom: 36px; }
   ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid #1c1c1c; }
-  li { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid #1c1c1c; }
+  li { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid #1c1c1c; flex-wrap: wrap; }
   .n { color: #555; width: 28px; font-size: 14px; }
   .key { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 15px; flex: 1; }
+  .tag { color: #555; font-size: 12px; border: 1px solid #222; border-radius: 999px; padding: 1px 8px; }
   .ms { color: #555; font-size: 13px; font-variant-numeric: tabular-nums; }
-  .status { display: flex; align-items: center; gap: 8px; font-size: 14px; min-width: 120px; justify-content: flex-end; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 14px; min-width: 110px; justify-content: flex-end; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #666; }
   .ok .dot { background: #3ddc84; }
   .warn .dot { background: #ffb020; }
   .bad .dot { background: #ff4d4f; }
-  .msg { color: #888; font-size: 14px; padding: 24px 0; }
+  .rm { color: #888; padding: 3px 10px; font-size: 12px; }
+  .rm:hover { color: #ff4d4f; border-color: #ff4d4f; }
+  form { display: flex; gap: 10px; margin-top: 28px; }
+  .msg { color: #888; font-size: 14px; padding: 16px 0 0; min-height: 20px; }
+  .msg.err { color: #ff4d4f; }
+  .gate { margin-top: 40px; }
 </style>
 </head>
 <body>
 <main>
   <div class="top"><h1>yuki / api keys</h1><button id="refresh">refresh</button></div>
-  <div class="count" id="count">–<span> / –</span></div>
-  <div class="sub" id="sub">checking...</div>
-  <ul id="list"></ul>
-  <div class="msg" id="msg" hidden></div>
+  <div id="gate" class="gate" hidden>
+    <div class="sub">this page is locked. enter the token (KEYS_PAGE_TOKEN).</div>
+    <form id="gateform"><input id="tokeninput" type="password" placeholder="token" autocomplete="off"><button type="submit">unlock</button></form>
+  </div>
+  <div id="view">
+    <div class="count" id="count">–<span> / –</span></div>
+    <div class="sub" id="sub">checking...</div>
+    <ul id="list"></ul>
+    <form id="addform" hidden><input id="keyinput" type="password" placeholder="add a key (gsk_...)" autocomplete="off" spellcheck="false"><button type="submit" id="addbtn">add</button></form>
+    <div class="msg" id="msg"></div>
+  </div>
 </main>
 <script>
-  const params = new URLSearchParams(location.search);
-  const token = params.get("token");
   const $ = (id) => document.getElementById(id);
+  const url = new URL(location.href);
+  let token = url.searchParams.get("token") || sessionStorage.getItem("keystoken") || "";
+  if (url.searchParams.has("token")) {            // keep the token out of the address bar and history
+    sessionStorage.setItem("keystoken", token);
+    url.searchParams.delete("token");
+    history.replaceState(null, "", url.pathname + url.search);
+  }
   const LABELS = { ok: "working", limited: "rate limited", invalid: "invalid key", restricted: "restricted", model: "model not found", timeout: "timed out", error: "error" };
   const CLASS = { ok: "ok", limited: "warn", timeout: "warn" };
+  const headers = () => ({ "content-type": "application/json", "x-keys-token": token });
+
+  function say(text, bad) { const m = $("msg"); m.textContent = text || ""; m.className = "msg" + (bad ? " err" : ""); }
 
   async function load(force) {
     const btn = $("refresh");
     btn.disabled = true; btn.textContent = "checking...";
-    $("msg").hidden = true;
     try {
-      const url = "keys.json" + "?" + new URLSearchParams({ ...(token ? { token } : {}), ...(force ? { fresh: "1" } : {}) });
-      const res = await fetch(url, { cache: "no-store" });
-      if (res.status === 401) throw new Error("wrong or missing ?token=");
+      const res = await fetch("keys.json" + (force ? "?fresh=1" : ""), { cache: "no-store", headers: { "x-keys-token": token } });
+      if (res.status === 401) { $("gate").hidden = false; $("view").hidden = true; return; }
+      if (res.status === 503) throw new Error("the bot is still starting, try again in a few seconds");
       if (!res.ok) throw new Error("server said " + res.status);
+      $("gate").hidden = true; $("view").hidden = false;
       render(await res.json());
     } catch (e) {
+      $("gate").hidden = true; $("view").hidden = false;
       $("sub").textContent = "";
-      $("msg").textContent = "couldn't load: " + e.message;
-      $("msg").hidden = false;
+      say("couldn't load: " + e.message, true);
     } finally {
       btn.disabled = false; btn.textContent = "refresh";
     }
   }
 
+  function mk(tag, props, ...kids) { const el = Object.assign(document.createElement(tag), props || {}); el.append(...kids); return el; }
+
   function render(d) {
-    $("count").replaceChildren(document.createTextNode(String(d.working)), Object.assign(document.createElement("span"), { textContent: " / " + d.total }));
+    $("count").replaceChildren(document.createTextNode(String(d.working)), mk("span", { textContent: " / " + d.total }));
     const age = Math.max(0, Math.round(Date.now() / 1000 - d.checked_at));
     $("sub").textContent = "keys working · model " + d.model + " · checked " + (age < 5 ? "just now" : age + "s ago");
+    $("addform").hidden = !d.editable;
     const list = $("list");
     list.replaceChildren();
     for (const k of d.keys) {
-      const li = document.createElement("li");
-      const n = Object.assign(document.createElement("span"), { className: "n", textContent: "#" + k.n });
-      const key = Object.assign(document.createElement("span"), { className: "key", textContent: "…" + k.last4 });
-      const ms = Object.assign(document.createElement("span"), { className: "ms", textContent: k.ms != null ? k.ms + " ms" : "" });
-      const st = document.createElement("span");
-      st.className = "status " + (CLASS[k.status] || "bad");
-      st.append(Object.assign(document.createElement("span"), { className: "dot" }), document.createTextNode(LABELS[k.status] || k.status));
-      li.append(n, key, ms, st);
+      const st = mk("span", { className: "status " + (CLASS[k.status] || "bad") }, mk("span", { className: "dot" }), document.createTextNode(LABELS[k.status] || k.status));
+      const li = mk("li", null,
+        mk("span", { className: "n", textContent: "#" + k.n }),
+        mk("span", { className: "key", textContent: "…" + k.last4 }),
+        mk("span", { className: "tag", textContent: k.source === "saved" ? "saved" : "env" }),
+        mk("span", { className: "ms", textContent: k.ms != null ? k.ms + " ms" : "" }),
+        st);
+      if (d.editable && k.source === "saved") {
+        const rm = mk("button", { className: "rm", textContent: "remove", type: "button" });
+        rm.addEventListener("click", () => removeKey(k));
+        li.append(rm);
+      }
       list.append(li);
     }
   }
+
+  async function removeKey(k) {
+    if (!confirm("remove key #" + k.n + " (…" + k.last4 + ")?")) return;
+    say("");
+    const res = await fetch("keys/remove", { method: "POST", headers: headers(), body: JSON.stringify({ n: k.n, last4: k.last4 }) });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) return say(out.error || "couldn't remove it", true);
+    load(true);
+  }
+
+  $("addform").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const key = $("keyinput").value.trim();
+    if (!key) return;
+    const btn = $("addbtn");
+    btn.disabled = true; btn.textContent = "testing..."; say("");
+    try {
+      const res = await fetch("keys/add", { method: "POST", headers: headers(), body: JSON.stringify({ key }) });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) return say(out.error || "couldn't add it", true);
+      $("keyinput").value = "";
+      say("added. status: " + (LABELS[out.status] || out.status));
+      load(true);
+    } catch (e) {
+      say("couldn't add it: " + e.message, true);
+    } finally {
+      btn.disabled = false; btn.textContent = "add";
+    }
+  });
+
+  $("gateform").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    token = $("tokeninput").value.trim();
+    sessionStorage.setItem("keystoken", token);
+    load(false);
+  });
 
   $("refresh").addEventListener("click", () => load(true));
   load(false);
@@ -407,14 +510,16 @@ _key_cache: dict = {"ts": 0.0, "data": None}
 _key_cache_lock = asyncio.Lock()
 
 
-async def check_key(i: int) -> dict:
+async def check_key(i: int, client=None) -> dict:
     """One tiny real request with this key (a few tokens), so 'working' means it can really answer right now."""
     started = time.time()
     status = "ok"
+    client = client or groq_clients[i]
+    last4, source = GROQ_KEYS[i][-4:], KEY_SOURCES[i]  # read now: the lists can change while the request is out
     try:
         extra = {"reasoning_effort": "low"} if MODEL.startswith("openai/gpt-oss") else {}
         await asyncio.wait_for(
-            groq_clients[i].chat.completions.create(
+            client.chat.completions.create(
                 model=MODEL, messages=[{"role": "user", "content": "hi"}], max_completion_tokens=16, extra_body=extra,
             ),
             timeout=20,
@@ -431,7 +536,90 @@ async def check_key(i: int) -> dict:
         status = "restricted" if "organization_restricted" in str(e) else "error"
     except Exception as e:
         status = "restricted" if "organization_restricted" in str(e) else "invalid" if getattr(e, "status_code", None) in (401, 403) else "error"
-    return {"n": i + 1, "last4": GROQ_KEYS[i][-4:], "status": status, "ms": round((time.time() - started) * 1000)}
+    return {"n": i + 1, "last4": last4, "source": source, "status": status, "ms": round((time.time() - started) * 1000)}
+
+
+_keys_edit_lock = asyncio.Lock()
+_edit_fails: list = []  # times of wrong-token attempts, to slow down guessing
+
+
+def keys_can_edit(token: str) -> bool:
+    """Adding / removing keys needs KEYS_PAGE_TOKEN to be set AND to match. With no token set, editing is off."""
+    if not KEYS_PAGE_TOKEN:
+        return False
+    now = time.time()
+    _edit_fails[:] = [t for t in _edit_fails if now - t < 600]
+    if len(_edit_fails) >= 10:  # 10 wrong guesses in 10 minutes: locked for a while, even for the right token
+        return False
+    if hmac.compare_digest((token or "").encode(), KEYS_PAGE_TOKEN.encode()):
+        return True
+    _edit_fails.append(now)
+    return False
+
+
+KEY_FORMAT = re.compile(r"^[A-Za-z0-9_\-]{20,200}$")
+
+
+async def add_key(raw: str) -> tuple[int, dict]:
+    async with _keys_edit_lock:
+        return await _add_key(raw)
+
+
+async def _add_key(raw: str) -> tuple[int, dict]:
+    """Add a Groq key from the /keys page. It's tested first, then saved in Postgres and used right away."""
+    k = (raw or "").strip()
+    if not KEY_FORMAT.match(k) or not k.startswith("gsk_"):
+        return 400, {"error": "that doesn't look like a groq key (they start with gsk_)"}
+    if k in GROQ_KEYS:
+        return 409, {"error": "that key is already in the list"}
+    if len(GROQ_KEYS) >= 20:
+        return 400, {"error": "that's 20 keys already, remove one first"}
+    client = make_client(k)
+    # it joins the lists first (the check reads them), and leaves again right away if groq says it's invalid
+    GROQ_KEYS.append(k)
+    KEY_SOURCES.append("saved")
+    groq_clients.append(client)
+    idx = len(GROQ_KEYS) - 1
+    result = await check_key(idx)
+    if result["status"] == "invalid":  # groq doesn't accept it: don't keep it
+        for lst in (GROQ_KEYS, KEY_SOURCES, groq_clients):
+            lst.pop(idx)
+        return 400, {"error": "groq says that key is invalid"}
+    saved = [GROQ_KEYS[j] for j in range(len(GROQ_KEYS)) if KEY_SOURCES[j] == "saved"]
+    await run(mem.fast_set, 0, "groq_keys", saved)
+    _key_cache["ts"] = 0.0
+    log.info("%s added from the /keys page, status: %s", key_tag(idx), result["status"])
+    return 200, {"ok": True, "status": result["status"], "n": idx + 1}
+
+
+async def remove_key(n, last4) -> tuple[int, dict]:
+    async with _keys_edit_lock:
+        return await _remove_key(n, last4)
+
+
+async def _remove_key(n, last4) -> tuple[int, dict]:
+    """Remove a key that was added on the page. Keys from environment variables can only be removed in Render."""
+    try:
+        idx = int(n) - 1
+    except (TypeError, ValueError):
+        return 400, {"error": "bad key number"}
+    if not 0 <= idx < len(GROQ_KEYS) or GROQ_KEYS[idx][-4:] != str(last4 or ""):
+        return 409, {"error": "the list changed, refresh the page and try again"}  # the last 4 characters must match, so the wrong key can't go
+    if KEY_SOURCES[idx] != "saved":
+        return 400, {"error": "that key comes from an environment variable, remove it in Render"}
+    if len(GROQ_KEYS) <= 1:
+        return 400, {"error": "he needs at least one key"}
+    tag = key_tag(idx)
+    for lst in (GROQ_KEYS, KEY_SOURCES, groq_clients):
+        lst.pop(idx)
+    saved = [GROQ_KEYS[j] for j in range(len(GROQ_KEYS)) if KEY_SOURCES[j] == "saved"]
+    if saved:
+        await run(mem.fast_set, 0, "groq_keys", saved)
+    else:
+        await run(mem.fast_delete, 0, "groq_keys")
+    _key_cache["ts"] = 0.0
+    log.info("%s removed from the /keys page", tag)
+    return 200, {"ok": True}
 
 
 async def key_report(fresh: bool = False) -> dict:

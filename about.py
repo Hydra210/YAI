@@ -12,12 +12,22 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.16.0.1"
+VERSION = "1.16.1.0"
 VERSION_DATE = "2026-10-26"
-VERSION_NOTE = "he learns slang now, and a restricted groq key no longer takes him down"
+VERSION_NOTE = "he learns slang, and groq keys can be added from a web page"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {
+        "version": "1.16.1.0",
+        "date": "2026-10-26",
+        "title": "add groq keys from a web page",
+        "changes": [
+            "the `/keys` page on his server can add and remove Groq keys now, no environment variables needed. a new key is tested first, then saved "
+            "and used right away, and it survives restarts. keys from environment variables show as 'env' and can only be removed in Render.",
+            "adding and removing needs `KEYS_PAGE_TOKEN` set (the page asks for it). without a token the page is read-only.",
+        ],
+    },
     {
         "version": "1.16.0.1",
         "date": "2026-10-26",

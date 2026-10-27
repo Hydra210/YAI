@@ -42,8 +42,10 @@ async def app(scope, receive, send):
     if path in ("/keys", "/keys.json"):
         # same key status page as on Render. KEYS_PAGE_TOKEN (optional) works the same way: /keys?token=...
         token = (os.getenv("KEYS_PAGE_TOKEN") or "").strip()
-        if token and query.get("token", [""])[0] != token:
-            return await _send(send, 401, b"wrong or missing ?token=", "text/plain; charset=utf-8")
+        headers = {k.decode().lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        given = headers.get("x-keys-token") or query.get("token", [""])[0]
+        if path == "/keys.json" and token and given != token:
+            return await _send(send, 401, b'{"error": "wrong token"}', "application/json")
         if path == "/keys":
             b = sys.modules.get("bot")
             if b is None or not hasattr(b, "KEYS_HTML"):
@@ -56,7 +58,8 @@ async def app(scope, receive, send):
             report = None
         if report is None:
             return await _send(send, 503, b'{"error": "the bot is still starting, try again in a few seconds"}', "application/json")
-        return await _send(send, 200, json.dumps(report).encode(), "application/json")
+        # adding / removing keys from the page only works on Render (the bot's own web server), so no edit buttons here
+        return await _send(send, 200, json.dumps({**report, "editable": False}).encode(), "application/json")
 
     if path in ("/", "/health"):
         body = b"ok"
