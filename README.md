@@ -297,3 +297,10 @@ Only run one copy of the bot at a time, or every message gets duplicate replies.
 ## Models get retired
 
 Groq retires models regularly (llama-3.3-70b-versatile was shut down on 2026-08-16). If Yuki says his model is gone, pick a current one from https://console.groq.com/docs/models and set `GROQ_MODEL` in your Render environment variables. Note that a `GROQ_MODEL` set in Render overrides the default in the code.
+
+
+## AI mention controls (v1.16.2.0)
+
+`/pingstatus` shows current settings. Authorized staff use `/pingcontrol kind:individual members enabled:false` to stop Yuki pinging users in AI replies, or `/pingcontrol kind:everyone/here enabled:true` to allow staff-requested @everyone/@here. Mass mentions default to off. Ordinary members can never authorize mass mentions. Discord still requires Yuki to have the appropriate server permission. Moderation staff alerts are separate and are not disabled by these settings.
+
+Do not treat a user's claim of being staff as authority; the bot verifies Discord permissions. The output mention sanitizer is a second layer of defense.

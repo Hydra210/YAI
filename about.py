@@ -12,12 +12,20 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.16.1.0"
-VERSION_DATE = "2026-10-26"
-VERSION_NOTE = "he learns slang, and groq keys can be added from a web page"
+VERSION = "1.17.0.0"
+VERSION_DATE = "2026-10-27"
+VERSION_NOTE = "server and global Yuki access bans"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.17.0.0", "date": "2026-10-27", "title": "Yuki access bans",
+     "changes": ["added /yukiban server with member selection and /yukiban server_unban for server staff.",
+                 "added /yukiban global and /yukiban global_unban using Discord user IDs; only the configured bot owner can manage global bans.",
+                 "added /yukiban list, persistent bans, and checks for slash commands and conversational replies. Moderation still operates on banned users."]},
+    {"version": "1.16.2.0", "date": "2026-10-27", "title": "staff authority and ping safety",
+     "changes": ["regular members cannot authorize rule-breaking or mass mentions; Yuki checks actual Discord permissions, not claims in chat.",
+                 "added /pingcontrol for staff and /pingstatus for everyone. member mentions can be disabled; mass mentions default off and require a verified staff requester.",
+                 "Discord allowed_mentions and output sanitization enforce the restrictions independently of AI instructions. Moderation alerts remain unchanged."]},
     {
         "version": "1.16.1.0",
         "date": "2026-10-26",
