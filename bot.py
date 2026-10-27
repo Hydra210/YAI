@@ -572,8 +572,6 @@ async def _add_key(raw: str) -> tuple[int, dict]:
         return 400, {"error": "that doesn't look like a groq key (they start with gsk_)"}
     if k in GROQ_KEYS:
         return 409, {"error": "that key is already in the list"}
-    if len(GROQ_KEYS) >= 20:
-        return 400, {"error": "that's 20 keys already, remove one first"}
     client = make_client(k)
     # it joins the lists first (the check reads them), and leaves again right away if groq says it's invalid
     GROQ_KEYS.append(k)
