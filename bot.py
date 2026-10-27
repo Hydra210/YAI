@@ -681,10 +681,10 @@ def clean_ai_mentions(text, *, users=False, mass=False):
     # Neutralize actual Discord mention syntax as well as plain @everyone/@here.
     if not mass:
         text = re.sub(r"@(everyone|here)\b", lambda m: "@\u200b" + m.group(1), text, flags=re.I)
-        text = re.sub(r"<@&([0-9]+)>", r"<@\u200b&\1>", text)
+        text = re.sub(r"<@&([0-9]+)>", lambda m: "<@\u200b&" + m.group(1) + ">", text)
     if not users:
-        text = re.sub(r"<@!?([0-9]+)>", r"<@\u200b\1>", text)
-        text = re.sub(r"(?<![\w@])@([\w.\-]{2,32})", r"@\u200b\1", text)
+        text = re.sub(r"<@!?([0-9]+)>", lambda m: "<@\u200b" + m.group(1) + ">", text)
+        text = re.sub(r"(?<![\w@])@([\w.\-]{2,32})", lambda m: "@\u200b" + m.group(1), text)
     return text
 
 
