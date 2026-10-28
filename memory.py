@@ -71,7 +71,14 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE TABLE IF NOT EXISTS scopes (
     scope   BIGINT PRIMARY KEY,
     vibe    TEXT   NOT NULL DEFAULT '{}',
+    topics  TEXT   NOT NULL DEFAULT '[]',
     pending INTEGER NOT NULL DEFAULT 0,
+    updated BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS mood_states (
+    scope   BIGINT PRIMARY KEY,
+    state   TEXT NOT NULL DEFAULT '{}',
     updated BIGINT NOT NULL DEFAULT 0
 );
 
@@ -118,7 +125,11 @@ class Memory:
         self.retention_days = retention_days
         self.slots = threading.BoundedSemaphore(pool_max)  # the pool raises when full instead of waiting
         self.pool = self._open_pool(database_url.strip(), pool_max)
-        self._do(lambda cur: cur.execute(SCHEMA))
+        def initialize(cur):
+            cur.execute(SCHEMA)
+            # Safe migration for databases created before topic-learning was added.
+            cur.execute("ALTER TABLE scopes ADD COLUMN IF NOT EXISTS topics TEXT NOT NULL DEFAULT '[]'")
+        self._do(initialize)
         self.optouts = {r["user_id"] for r in self._do(self._fetch("SELECT user_id FROM optouts"))}
         self.fast: dict[int, dict[str, Any]] = {}
         for r in self._do(self._fetch("SELECT scope, key, value FROM facts")):
@@ -419,27 +430,83 @@ class Memory:
     # ---------- server vibe (learned) ----------
 
     def get_vibe(self, scope) -> dict:
-        row = self._one("SELECT vibe FROM scopes WHERE scope = %s", (scope,))
-        return _json(row["vibe"], {}) if row else {}
+        row = self._one("SELECT vibe, topics FROM scopes WHERE scope = %s", (scope,))
+        if not row:
+            return {}
+        vibe = _json(row["vibe"], {})
+        vibe["topics"] = _json(row.get("topics"), [])
+        return vibe
 
     def next_scope_job(self, min_pending):
         row = self._one(
-            "SELECT scope, vibe, pending FROM scopes WHERE pending >= %s ORDER BY pending DESC LIMIT 1",
+            "SELECT scope, vibe, topics, pending FROM scopes WHERE pending >= %s ORDER BY pending DESC LIMIT 1",
             (min_pending,),
         )
         if not row:
             return None
         row["vibe"] = _json(row["vibe"], {})
+        row["topics"] = _json(row.get("topics"), [])
+        row["vibe"]["topics"] = row["topics"]
         return row
 
     def save_vibe(self, scope, vibe=None):
         if vibe is not None:
+            topics = vibe.get("topics", []) if isinstance(vibe, dict) else []
+            core = {k: v for k, v in vibe.items() if k != "topics"} if isinstance(vibe, dict) else {}
             self._exec(
-                "UPDATE scopes SET vibe = %s, pending = 0, updated = %s WHERE scope = %s",
-                (json.dumps(vibe), int(time.time()), scope),
+                "UPDATE scopes SET vibe = %s, topics = %s, pending = 0, updated = %s WHERE scope = %s",
+                (json.dumps(core), json.dumps(topics), int(time.time()), scope),
             )
         else:
             self._exec("UPDATE scopes SET pending = 0 WHERE scope = %s", (scope,))
+
+    # ---------- persistent simulated emotional state ----------
+
+    _MOOD_DEFAULTS = {
+        "happiness": 0, "annoyance": 0, "excitement": 0,
+        "embarrassment": 0, "curiosity": 15, "energy": 70,
+    }
+
+    def get_mood(self, scope) -> dict:
+        """Return persistent mood with gentle time-based settling; never stores real personal traits."""
+        now = int(time.time())
+        row = self._one("SELECT state, updated FROM mood_states WHERE scope = %s", (scope,))
+        state = dict(self._MOOD_DEFAULTS)
+        if row:
+            state.update(_json(row.get("state"), {}))
+            elapsed_hours = max(0, now - int(row.get("updated") or now)) / 3600
+            settle = min(30, elapsed_hours * 2.0)
+            for key in ("happiness", "annoyance", "excitement", "embarrassment"):
+                value = float(state.get(key, 0))
+                state[key] = round(value - min(abs(value), settle) * (1 if value > 0 else -1))
+            state["energy"] = round(max(20, min(100, float(state.get("energy", 70)) + min(20, elapsed_hours * 1.5))))
+            self.save_mood(scope, state, now=now)
+        return state
+
+    def save_mood(self, scope, state: dict, now=None):
+        clean = {}
+        for key, default in self._MOOD_DEFAULTS.items():
+            try:
+                value = int(state.get(key, default))
+                clean[key] = max(0, min(100, value)) if key in ("curiosity", "energy") else max(-100, min(100, value))
+            except (TypeError, ValueError):
+                clean[key] = default
+        self._exec(
+            "INSERT INTO mood_states(scope, state, updated) VALUES (%s, %s, %s) "
+            "ON CONFLICT (scope) DO UPDATE SET state = EXCLUDED.state, updated = EXCLUDED.updated",
+            (scope, json.dumps(clean), int(now or time.time())),
+        )
+
+    def adjust_mood(self, scope, changes: dict):
+        state = self.get_mood(scope)
+        for key, delta in changes.items():
+            if key in state:
+                try:
+                    state[key] = max(-100, min(100, int(state[key]) + int(delta)))
+                except (TypeError, ValueError):
+                    continue
+        self.save_mood(scope, state)
+        return state
 
     # ---------- fast memory (per-server facts, cached in RAM) ----------
 

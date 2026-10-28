@@ -12,12 +12,17 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.17.1"
+VERSION = "1.18.0.0"
 VERSION_DATE = "2026-10-27"
-VERSION_NOTE = "stability and AI improvements"
+VERSION_NOTE = "persistent mood and deeper server learning"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.0.0", "date": "2026-10-27", "title": "persistent mood and deeper learning",
+     "changes": ["added persistent, gently settling simulated moods stored in Postgres.",
+                 "expanded background server learning to save niche-topic summaries alongside slang and inside jokes.",
+                 "removed the persona store's SQLite/local-file fallback; all saved persona and memory data requires persistent Postgres."]},
+
     {"version": "1.17.0.0", "date": "2026-10-27", "title": "Yuki access bans",
      "changes": ["added /yukiban server with member selection and /yukiban server_unban for server staff.",
                  "added /yukiban global and /yukiban global_unban using Discord user IDs; only the configured bot owner can manage global bans.",

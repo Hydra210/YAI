@@ -6,8 +6,8 @@ user id and only ever injected into the prompt when that same person is the one 
 person's persona never leaks into how he talks to anyone else.
 
 Storage:
-  - DATABASE_URL set  -> Postgres (psycopg2). This is what you want on Render: it survives restarts/deploys.
-  - otherwise         -> a SQLite file (same DATABASE_PATH as the rest of the memory, default yuki.db).
+  - Postgres only via DATABASE_URL. Missing database configuration is a startup error;
+    there is deliberately no SQLite or local-file fallback.
 
 All methods are synchronous and thread safe; call them with asyncio.to_thread from the bot. Reads are served
 from an in-memory cache, so normal chat never waits on the database.
@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import threading
 import time
 
@@ -39,17 +38,18 @@ def clean_directive(text) -> str:
 
 
 class PersonaStore:
-    def __init__(self, database_url: str | None = None, sqlite_path: str = "yuki.db"):
+    def __init__(self, database_url: str | None = None):
         self.lock = threading.Lock()
         self.cache: dict[int, list[str]] = {}
-        self.url = (database_url or "").strip() or None
-        self.sqlite_path = sqlite_path
+        self.url = (database_url or "").strip()
+        if not self.url:
+            raise RuntimeError("DATABASE_URL is required. Persona storage is Postgres-only; no local SQLite fallback.")
         self.pg = None
-        self.lite = None
-        self._down_until = 0.0  # after a failed connect, don't retry for a bit (keeps chat fast while the db is down)
-        self.backend = "postgres" if self.url else "sqlite"
-        self._connect()
-        log.info("persona store ready (%s)", self.backend)
+        self._down_until = 0.0
+        self.backend = "postgres"
+        if not self._connect():
+            raise RuntimeError("Could not initialize persistent Postgres persona storage.")
+        log.info("persona store ready (Postgres only)")
 
     # ---------- connection ----------
 
@@ -73,17 +73,6 @@ class PersonaStore:
                         " directives TEXT NOT NULL DEFAULT '[]',"
                         " updated BIGINT NOT NULL DEFAULT 0)"
                     )
-            else:
-                if self.lite is None:
-                    self.lite = sqlite3.connect(self.sqlite_path, check_same_thread=False)
-                    self.lite.row_factory = sqlite3.Row
-                    self.lite.execute(
-                        "CREATE TABLE IF NOT EXISTS personas ("
-                        " user_id INTEGER PRIMARY KEY,"
-                        " directives TEXT NOT NULL DEFAULT '[]',"
-                        " updated INTEGER NOT NULL DEFAULT 0)"
-                    )
-                    self.lite.commit()
             return True
         except Exception:
             log.exception("persona store couldn't connect to %s", self.backend)
@@ -95,19 +84,14 @@ class PersonaStore:
         """Run one statement, reconnecting once if the Postgres connection dropped."""
         for attempt in (1, 2):
             try:
-                if self.url:
-                    if self.pg is None or self.pg.closed:
-                        if time.time() < self._down_until or not self._connect():
-                            raise ConnectionError("postgres unavailable")
-                    with self.pg.cursor() as cur:
-                        cur.execute(sql_pg, args)
-                        return cur.fetchall() if fetch else None
-                cur = self.lite.execute(sql_lite, args)
-                rows = cur.fetchall() if fetch else None
-                self.lite.commit()
-                return rows
+                if self.pg is None or self.pg.closed:
+                    if time.time() < self._down_until or not self._connect():
+                        raise ConnectionError("postgres unavailable")
+                with self.pg.cursor() as cur:
+                    cur.execute(sql_pg, args)
+                    return cur.fetchall() if fetch else None
             except Exception:
-                if attempt == 2 or not self.url:
+                if attempt == 2:
                     raise
                 self.pg = None  # force a reconnect on the next loop
 
