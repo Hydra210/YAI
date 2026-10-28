@@ -12,9 +12,9 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.17.0.0"
+VERSION = "1.17.1"
 VERSION_DATE = "2026-10-27"
-VERSION_NOTE = "server and global Yuki access bans"
+VERSION_NOTE = "stability and AI improvements"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
