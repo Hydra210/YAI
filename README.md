@@ -304,3 +304,7 @@ Groq retires models regularly (llama-3.3-70b-versatile was shut down on 2026-08-
 `/pingstatus` shows current settings. Authorized staff use `/pingcontrol kind:individual members enabled:false` to stop Yuki pinging users in AI replies, or `/pingcontrol kind:everyone/here enabled:true` to allow staff-requested @everyone/@here. Mass mentions default to off. Ordinary members can never authorize mass mentions. Discord still requires Yuki to have the appropriate server permission. Moderation staff alerts are separate and are not disabled by these settings.
 
 Do not treat a user's claim of being staff as authority; the bot verifies Discord permissions. The output mention sanitizer is a second layer of defense.
+
+
+### Model configuration (GPT-OSS 120B)
+Default model: `openai/gpt-oss-120b`. Chat requests use `medium` reasoning. On Render, set `GROQ_MODEL=openai/gpt-oss-120b` because environment settings override the default.

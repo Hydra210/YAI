@@ -807,7 +807,7 @@ async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None,
     use_model = model or MODEL
     extra = {}
     if use_model.startswith("openai/gpt-oss"):
-        extra["reasoning_effort"] = "low"
+        extra["reasoning_effort"] = "medium"
     kwargs = {}
     if tools:
         kwargs["tools"] = tools
