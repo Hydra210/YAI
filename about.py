@@ -12,12 +12,16 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.0.0"
-VERSION_DATE = "2026-10-27"
-VERSION_NOTE = "persistent mood and deeper server learning"
+VERSION = "1.18.1.0"
+VERSION_DATE = "2026-10-30"
+VERSION_NOTE = "shared personal memories for Yuki Cloud and Desktop"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.1.0", "date": "2026-10-30", "title": "shared personal memories for Yuki Cloud and Desktop",
+     "changes": ["added /personal-memory to explicitly save, list, and remove personal notes shared with Yuki Desktop.",
+                 "personal notes are only added to Yuki's private DM context, not public server replies, to avoid exposing personal information.",
+                 "the existing /memory forget flow also deletes these notes and blocks new notes until /memory resume."]},
     {"version": "1.18.0.0", "date": "2026-10-27", "title": "persistent mood and deeper learning",
      "changes": ["added persistent, gently settling simulated moods stored in Postgres.",
                  "expanded background server learning to save niche-topic summaries alongside slang and inside jokes.",
@@ -142,14 +146,15 @@ ABOUT = {
     ),
     "talk": (
         "ways to talk to him: @mention him in a server, `/yuki question: ...`, dm him (he answers every dm), or start a message with 'yuki'. "
-        "`/memory` shows or wipes what he knows about you, `/persona` shows or resets how he acts with you, `/meme` makes captioned images, "
-        "and `/about` shows this info. staff also have `/mod` and `/slang`."
+        "`/memory` shows or wipes what he knows about you, `/personal-memory` saves, lists, or removes personal notes shared with Yuki Desktop, "
+        "`/persona` shows or resets how he acts with you, `/meme` makes captioned images, and `/about` shows this info. staff also have `/mod` and `/slang`."
     ),
     "memory": (
         "memory: he keeps messages per server in a database, searches old ones (like 'what did bob say about valorant'), and writes short "
         "notes about each person and server so he picks up how everyone talks. `/memory show` lists what he knows about you, `/memory forget` "
-        "wipes it and stops him remembering you, `/memory resume` turns it back on. messages older than 90 days are pruned and he doesn't "
-        "keep sensitive stuff (health, religion, politics, money, personal info) in his notes."
+        "wipes it and stops him remembering you, `/memory resume` turns it back on. `/personal-memory` saves, lists, or removes notes that sync "
+        "with Yuki Desktop; those personal notes are used in your private DMs only, never server replies. messages older than 90 days are pruned and he doesn't "
+        "keep sensitive stuff (health, religion, politics, money, personal info) in his learned notes."
     ),
     "moderation": (
         "moderation: he reads the server's rules himself and reminds people who break the ones code can check: slurs, bullying and insults "

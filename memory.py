@@ -105,6 +105,18 @@ CREATE INDEX IF NOT EXISTS idx_mod_log_user ON mod_log(scope, user_id, ts);
 CREATE TABLE IF NOT EXISTS optouts (
     user_id BIGINT PRIMARY KEY
 );
+
+-- Explicitly saved personal notes shared by the Discord bot and Yuki Cloud.
+CREATE TABLE IF NOT EXISTS yuki_personal_memories (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'discord',
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE(user_id, content)
+);
+CREATE INDEX IF NOT EXISTS yuki_personal_memories_user ON yuki_personal_memories(user_id, updated_at DESC);
 """
 
 
@@ -557,6 +569,8 @@ class Memory:
             # their DM scope is private to them, so clear Yuki's side of it too
             cur.execute("DELETE FROM messages WHERE scope = %s", (-user_id,))
             cur.execute("DELETE FROM profiles WHERE user_id = %s", (user_id,))
+            # Explicit personal notes are also erased when the user invokes the existing forget command.
+            cur.execute("DELETE FROM yuki_personal_memories WHERE user_id = %s", (user_id,))
             cur.execute("INSERT INTO optouts(user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,))
             return n
 
@@ -574,6 +588,36 @@ class Memory:
             (scope, user_id),
         )
         return {"messages": int(row["c"]) if row else 0, "opted_out": user_id in self.optouts}
+
+    # ---------- cross-device personal memories ----------
+
+    def personal_memories(self, user_id, limit=50) -> list:
+        """Return only the requesting Discord user's explicitly saved personal notes."""
+        rows = self._do(self._fetch(
+            "SELECT id, content, source, created_at, updated_at FROM yuki_personal_memories "
+            "WHERE user_id = %s ORDER BY updated_at DESC LIMIT %s", (int(user_id), max(1, min(int(limit), 100)))
+        ))
+        return rows
+
+    def add_personal_memory(self, user_id, content, source="discord") -> dict:
+        content = str(content or "").strip()
+        if not content or len(content) > 1000:
+            raise ValueError("personal memory must contain 1-1000 characters")
+        timestamp = int(time.time())
+        row = self._one(
+            "INSERT INTO yuki_personal_memories(user_id, content, source, created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT(user_id, content) "
+            "DO UPDATE SET updated_at = EXCLUDED.updated_at RETURNING id, content, source, created_at, updated_at",
+            (int(user_id), content, str(source or "discord")[:40], timestamp, timestamp),
+        )
+        return row or {}
+
+    def delete_personal_memory(self, user_id, content) -> int:
+        """Delete a matching note only for its owner; exact case-insensitive match."""
+        return self._exec(
+            "DELETE FROM yuki_personal_memories WHERE user_id = %s AND lower(content) = lower(%s)",
+            (int(user_id), str(content or "").strip()),
+        )
 
     # ---------- housekeeping ----------
 
