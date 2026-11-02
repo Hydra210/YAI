@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -44,8 +45,11 @@ async def app(scope, receive, send):
         token = (os.getenv("KEYS_PAGE_TOKEN") or "").strip()
         headers = {k.decode().lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         given = headers.get("x-keys-token") or query.get("token", [""])[0]
-        if path == "/keys.json" and token and given != token:
-            return await _send(send, 401, b'{"error": "wrong token"}', "application/json")
+        if path == "/keys.json":
+            if not token:  # no password set: the key status (real Groq requests, last 4 chars of each key) stays closed
+                return await _send(send, 403, b'{"error": "set KEYS_PAGE_TOKEN first"}', "application/json")
+            if not hmac.compare_digest(given.encode(), token.encode()):
+                return await _send(send, 401, b'{"error": "wrong token"}', "application/json")
         if path == "/keys":
             b = sys.modules.get("bot")
             if b is None or not hasattr(b, "KEYS_HTML"):

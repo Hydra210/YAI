@@ -141,7 +141,7 @@ _EXTRA_RE = (
 
 
 def normalize(text: str) -> str:
-    t = unicodedata.normalize("NFKD", (text or "")[:1000].lower())
+    t = unicodedata.normalize("NFKD", (text or "")[:4000].lower())  # was 1000: a slur after character 1000 was never seen
     t = "".join(c for c in t if not unicodedata.combining(c))
     return _ZERO_WIDTH.sub("", t).translate(_LEET)
 
@@ -568,7 +568,9 @@ class Mod:
             me = ch.permissions_for(guild.me)
         except Exception:
             return False
-        return bool(pub.view_channel and pub.read_message_history and me.view_channel and me.read_message_history)
+        # members must NOT be able to write there: whatever is in this channel becomes "the rules" (and goes into Yuki's prompt)
+        return bool(pub.view_channel and pub.read_message_history and not pub.send_messages
+                    and me.view_channel and me.read_message_history)
 
     def find_rules_channel(self, guild: discord.Guild):
         """Only channels everyone can see, since what's learned is shown to the whole server."""
@@ -646,7 +648,15 @@ class Mod:
             msgs = [m async for m in ch.history(limit=50, oldest_first=True)]
         except discord.HTTPException as e:
             return f"found #{ch.name} but discord wouldn't let me read it ({e.status})"
-        chunks = [t for t in (msg_text(m) for m in msgs) if t]
+        def trusted(m) -> bool:
+            """Only staff, bots and webhooks can write the rules. A regular member's message in there is ignored."""
+            a = m.author
+            if getattr(m, "webhook_id", None) or getattr(a, "bot", False) or a.id == getattr(guild, "owner_id", 0):
+                return True
+            p = getattr(a, "guild_permissions", None)
+            return bool(p and (p.administrator or p.manage_guild or p.manage_messages))
+
+        chunks = [t for t in (msg_text(m) for m in msgs if trusted(m)) if t]
         if ch.topic:
             chunks.insert(0, f"(channel topic) {ch.topic}")
         text = "\n\n".join(chunks)[:7000]

@@ -12,12 +12,18 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.1.0"
-VERSION_DATE = "2026-10-30"
-VERSION_NOTE = "shared personal memories for Yuki Cloud and Desktop"
+VERSION = "1.18.2.0"
+VERSION_DATE = "2026-11-02"
+VERSION_NOTE = "anti-spam and safety hardening"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.2.0", "date": "2026-11-02", "title": "anti-spam and safety hardening",
+     "changes": ["people who spam him get ignored for a bit (a short cooldown, a limit per minute, and a cap on how many replies can pile up in one channel). /yuki follows the same limits.",
+                 "everything he says now goes through a last code check: slurs, invite links, emails and phone numbers are blocked, repeated text is cut down, and he can only ping a few different people per reply, never the same one twice. replies are capped at 3 messages.",
+                 "edited messages are checked by moderation too, and moderation now reads the whole message instead of just the first 1000 characters.",
+                 "stricter persona checks, and chat lines can't pretend to be someone else anymore. rules are only read from messages by staff or bots in channels members can't write in.",
+                 "in servers he won't post long walls of text, he just says to ask him in DMs (DMs have no such limit). after he gives someone a reply of 400-1000 characters, that person only gets replies under 400 characters for the next 30 seconds. opening links has a per-person limit now, and the /keys status page always needs KEYS_PAGE_TOKEN."]},
     {"version": "1.18.1.0", "date": "2026-10-30", "title": "shared personal memories for Yuki Cloud and Desktop",
      "changes": ["added /personal-memory to explicitly save, list, and remove personal notes shared with Yuki Desktop.",
                  "personal notes are only added to Yuki's private DM context, not public server replies, to avoid exposing personal information.",
@@ -185,7 +191,7 @@ ABOUT = {
     ),
     "limits": (
         "limits: he can be wrong, his image vision is basic, his rule checks are heuristics, "
-        "and web search depends on the sources the owner set up."
+        "and web search depends on the sources the owner set up. if you send him too many messages too fast he ignores you for a minute, and he won't post slurs, invites or personal info even if you ask."
     ),
 }
 

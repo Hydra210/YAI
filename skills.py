@@ -53,6 +53,7 @@ import html as _html
 import discord
 
 import about
+import safety
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageSequence
@@ -972,12 +973,15 @@ async def _load_image(ctx: Ctx):
 def _open(data: bytes):
     _need_pil()
     try:
-        im = Image.open(io.BytesIO(data))
-        im.load()
+        im = Image.open(io.BytesIO(data))  # only reads the header, so the size is known before any pixels are decoded
     except Exception:
         raise ValueError("couldn't read that as an image")
     if im.width * im.height > MAX_IMAGE_PIXELS:
         raise ValueError("that image has way too many pixels for me")
+    try:
+        im.load()
+    except Exception:
+        raise ValueError("couldn't read that as an image")
     return im
 
 
@@ -1363,7 +1367,7 @@ async def set_persona(ctx: Ctx, instruction: str, replace: bool = False):
         return "persona saving isn't set up, so i can't make that stick"
     if ctx.user.id in ctx.mem.optouts:
         return "they opted out of me remembering them, so i can't save a persona. they can use /memory resume first"
-    if _PERSONA_BLOCK.search(str(instruction)):
+    if _PERSONA_BLOCK.search(str(instruction)) or not safety.persona_ok(instruction):
         return "can't save that one, it tries to change my rules rather than my style. say so"
     directives, saved, note = await _to_thread(ctx.personas.add, ctx.user.id, str(instruction), bool(replace))
     msg = f"saved for {ctx.user.display_name} only (nobody else is affected). their persona now: " + " | ".join(directives)
@@ -1559,6 +1563,9 @@ async def fetch_public(url: str, *, max_bytes: int = MAX_FETCH_BYTES, hops: int 
     required=["url"],
 )
 async def fetch_url(ctx: Ctx, url: str):
+    limited = _fetch_limited(ctx)
+    if limited:
+        return limited
     m = re.search(r"https?://[^\s<>\"')]+", str(url))
     target = m.group(0) if m else str(url).strip()
     if not re.match(r"https?://", target, re.I):
@@ -1581,6 +1588,22 @@ async def fetch_url(ctx: Ctx, url: str):
 
 SEARCH_RATE = (8, 600)  # (searches, seconds) per person; the owner is exempt
 _search_runs: dict = {}
+FETCH_RATE = (10, 600)  # (page loads, seconds) per person; otherwise Yuki is a free "visit this link" machine for anyone
+_fetch_runs: dict = {}
+
+
+def _fetch_limited(ctx: Ctx) -> str | None:
+    if ctx.is_owner:
+        return None
+    runs, window = FETCH_RATE
+    now = time.time()
+    q = _fetch_runs.setdefault(ctx.user.id, collections.deque())
+    while q and now - q[0] > window:
+        q.popleft()
+    if len(q) >= runs:
+        return f"opening links is rate limited for this person ({runs} per {window // 60} min), tell them to chill for a bit"
+    q.append(now)
+    return None
 
 
 def _search_limited(ctx: Ctx) -> str | None:

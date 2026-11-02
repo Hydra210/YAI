@@ -40,7 +40,7 @@ _REPEATS = re.compile(r"([a-z])\1{2,}")
 
 def soft_norm(text: str) -> str:
     """Lowercase, drop mentions/emoji tags, undo lookalike letters and in-word leetspeak, squash fuuuuck -> fuuck."""
-    t = _MENTION_TOKEN.sub(" ", (text or "")[:1000])
+    t = _MENTION_TOKEN.sub(" ", (text or "")[:4000])  # was 1000: anything after that was never checked
     t = unicodedata.normalize("NFKD", t.lower())
     t = "".join(c for c in t if not unicodedata.combining(c))
     t = _ZERO_WIDTH.sub("", t).translate(_HOMOGLYPHS)
