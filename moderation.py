@@ -29,6 +29,7 @@ from collections import defaultdict, deque
 import discord
 from discord import app_commands
 
+import pacing
 from textcheck import analyze_harassment, find_links, has_hate_slur, has_personal_info, has_strong_swear
 
 log = logging.getLogger("yuki.mod")
@@ -938,6 +939,7 @@ class Mod:
             everyone=False, replied_user=False,
             users=[discord.Object(id=author.id), *ping_users], roles=ping_roles,
         )
+        await pacing.pace(guild.id)  # never faster than one message every couple of seconds in a server
         try:
             sent = await message.reply(content, allowed_mentions=allowed, mention_author=False)
         except discord.HTTPException:

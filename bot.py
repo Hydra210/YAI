@@ -23,6 +23,7 @@ from groq import (
 )
 
 import about
+import pacing
 import safety
 import skills
 import slang
@@ -840,7 +841,19 @@ def shorten_reply(text: str, limit: int) -> str:
     return cut[: sp if sp > 0 else limit].rstrip(",;: ") + "..."
 
 
-MAX_WAITING_PER_CHANNEL = int(os.getenv("MAX_WAITING_PER_CHANNEL", "3"))  # replies running + queued in one channel
+TYPING_CPS = float(os.getenv("TYPING_CHARS_PER_SECOND", "30"))  # how fast he "types": longer replies show the typing bubble for longer
+TYPING_MAX_SECONDS = float(os.getenv("TYPING_MAX_SECONDS", "8"))
+
+
+async def typing_pause(length: int, started: float) -> None:
+    """Keep the typing bubble up for as long as a reply this size would take to type (counting the time already spent thinking)."""
+    target = min(TYPING_MAX_SECONDS, max(0.8, length / TYPING_CPS))
+    left = target - (time.monotonic() - started)
+    if left > 0:
+        await asyncio.sleep(left)
+
+
+MAX_WAITING_PER_CHANNEL = int(os.getenv("MAX_WAITING_PER_CHANNEL", "30"))  # replies running + waiting in one SERVER (he talks to one person at a time per server)
 channel_waiting: dict[int, int] = {}
 STATS = {"started": time.time(), "last_reply": 0.0, "replies": 0, "errors": 0, "timeouts": 0}
 
@@ -1749,6 +1762,8 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
         everyone=authorized_mass, roles=False, users=policy["users"], replied_user=False)}
     if files:
         kwargs["files"] = to_discord_files(files)
+    gid = message.guild.id if message.guild else None
+    await pacing.pace(gid)
     try:
         sent = await message.reply(first, **kwargs)
     except discord.HTTPException as e:
@@ -1758,6 +1773,7 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
             kwargs["files"] = to_discord_files(files)
         sent = await message.channel.send(first, **kwargs)
     for extra in rest:
+        await pacing.pace(gid)
         await message.channel.send(extra, allowed_mentions=kwargs["allowed_mentions"])
     return sent
 
@@ -1779,6 +1795,7 @@ async def _reply(message: discord.Message, roast: bool = False):
         return
     has_image = any(skills.is_image(a) for a in message.attachments)
     if not text and not has_image:
+        await pacing.pace(message.guild.id if message.guild else None)
         await message.reply("...what. i was napping")
         return
     if not text:
@@ -1790,11 +1807,14 @@ async def _reply(message: discord.Message, roast: bool = False):
     ]
 
     sctx = ctx_from_message(message)
+    started = time.monotonic()
     async with message.channel.typing():
         reply, files = await ask_yuki(
             scope, message.channel.id, message.id,
             message.author.id, message.author.display_name, text, mentioned, sctx, unprompted=roast,
         )
+        if reply:
+            await typing_pause(len(reply), started)  # bigger reply = typing bubble stays up longer
 
     if roast and not reply:
         return
@@ -1808,18 +1828,19 @@ async def handle_reply(message: discord.Message, roast: bool = False):
     """One reply, fully isolated: its own task, a hard timeout, and it can never take other chats down with it."""
     if yuki_ban_reason(message.author.id, message.guild.id if message.guild else None):
         return
-    cid = message.channel.id
+    cid = message.guild.id if message.guild else message.channel.id  # one conversation at a time per server (per chat in DMs)
     if not roast and not is_owner(message.author.id):
         gate = reply_gate.check(message.author.id)  # too many messages too fast: ignore them for a bit
         if gate == "warn":
             with contextlib.suppress(Exception):
+                await pacing.pace(message.guild.id if message.guild else None)
                 await message.reply("ok that's too many messages too fast, i'm ignoring you for a minute",
                                     mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             return
         if gate:
             return
     if channel_waiting.get(cid, 0) >= MAX_WAITING_PER_CHANNEL:
-        return  # the line in this channel is already full, so extra messages are dropped instead of piling up
+        return  # the line in this server is already full, so extra messages are dropped instead of piling up
     channel_waiting[cid] = channel_waiting.get(cid, 0) + 1
     lock = channel_locks.setdefault(cid, asyncio.Lock())
     try:
@@ -1830,6 +1851,7 @@ async def handle_reply(message: discord.Message, roast: bool = False):
         log.error("reply timed out after %ss in channel %s", REPLY_TIMEOUT, cid)
         if not roast:
             with contextlib.suppress(Exception):
+                await pacing.pace(message.guild.id if message.guild else None)
                 await message.reply("my brain lagged out, try again", mention_author=False)
     except Exception:
         STATS["errors"] += 1
@@ -1963,6 +1985,9 @@ async def yuki_command(interaction: discord.Interaction, question: str, image: d
             return await interaction.response.send_message(
                 "too many messages too fast, give me a minute" if gate == "warn" else "chill for a sec", ephemeral=True)
     question = question[:1500]
+    lock_key = interaction.guild_id or interaction.channel_id or -interaction.user.id  # same "one person at a time per server" line as @mentions
+    if channel_waiting.get(lock_key, 0) >= MAX_WAITING_PER_CHANNEL:
+        return await interaction.response.send_message("i'm busy talking to other people right now, try again in a few seconds", ephemeral=True)
     mark_talked()
     await interaction.response.defer(thinking=True)
     user = interaction.user
@@ -1971,14 +1996,25 @@ async def yuki_command(interaction: discord.Interaction, question: str, image: d
     await run(mem.add_message, interaction.id, scope, channel_key, user.id, user.display_name, question)
     sctx = ctx_from_interaction(interaction, image)
     async def _slash_ask():
-        async with reply_slots:  # same concurrency limit as @mentions (this command used to skip it)
-            return await ask_yuki(scope, channel_key, interaction.id, user.id, user.display_name, question, [], sctx)
+        async with channel_locks.setdefault(lock_key, asyncio.Lock()), reply_slots:  # same limits as @mentions
+            started = time.monotonic()
+            result = await asyncio.wait_for(
+                ask_yuki(scope, channel_key, interaction.id, user.id, user.display_name, question, [], sctx),
+                timeout=REPLY_TIMEOUT)
+            if result[0]:
+                await typing_pause(len(result[0]), started)
+            return result
 
+    channel_waiting[lock_key] = channel_waiting.get(lock_key, 0) + 1
     try:
-        reply, files = await asyncio.wait_for(_slash_ask(), timeout=REPLY_TIMEOUT)
+        reply, files = await _slash_ask()
     except asyncio.TimeoutError:
         STATS["timeouts"] += 1
         reply, files = "my brain lagged out, try again", []
+    finally:
+        channel_waiting[lock_key] = max(0, channel_waiting.get(lock_key, 1) - 1)
+        if not channel_waiting[lock_key]:
+            channel_waiting.pop(lock_key, None)
     policy = ping_policy(scope)
     authorized_mass = bool(interaction.guild and ai_staff(interaction.user) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
@@ -1987,8 +2023,10 @@ async def yuki_command(interaction: discord.Interaction, question: str, image: d
               roles=False, users=policy["users"], replied_user=False)}
     if files:
         kwargs["files"] = to_discord_files(files)
+    await pacing.pace(interaction.guild_id)
     sent = await interaction.followup.send(first, **kwargs)
     for extra in rest:
+        await pacing.pace(interaction.guild_id)
         await interaction.followup.send(extra, allowed_mentions=kwargs["allowed_mentions"])
     await run(mem.add_message, sent.id, scope, channel_key, client.user.id, "yuki", reply, True)
     STATS["replies"] += 1

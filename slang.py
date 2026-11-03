@@ -25,6 +25,7 @@ import time
 import discord
 from discord import app_commands
 
+import pacing
 from moderation import has_slur
 
 log = logging.getLogger("yuki.slang")
@@ -280,6 +281,7 @@ class Slang:
 
         question = random.choice(QUESTIONS).format(t=term)
         try:
+            await pacing.pace(gid)
             sent = await message.reply(question, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             return  # message deleted, or he can't talk there
@@ -341,6 +343,7 @@ class Slang:
         log.info("slang: learned %r = %r", p["term"], meaning)
         ack = random.choice(ACKS)
         try:
+            await pacing.pace(gid)
             sent = await message.reply(ack, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             await self.run(self.mem.add_message, sent.id, gid, message.channel.id, self.client.user.id, "yuki", ack, True)
         except discord.HTTPException:

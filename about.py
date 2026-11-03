@@ -12,14 +12,18 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.2.0"
+VERSION = "1.18.3.0"
 VERSION_DATE = "2026-11-02"
-VERSION_NOTE = "anti-spam and safety hardening"
+VERSION_NOTE = "one conversation at a time per server"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.3.0", "date": "2026-11-02", "title": "one conversation at a time per server",
+     "changes": ["in a server he now talks to one person at a time. everyone else waits in line (up to 30), and anything past that is dropped. /yuki follows the same line.",
+                 "the longer his reply is, the longer his typing bubble stays up (about 30 characters a second, never more than 8 seconds).",
+                 "there is always a 2 second gap between the messages he sends in a server, including moderation reminders and slang questions."]},
     {"version": "1.18.2.0", "date": "2026-11-02", "title": "anti-spam and safety hardening",
-     "changes": ["people who spam him get ignored for a bit (a short cooldown, a limit per minute, and a cap on how many replies can pile up in one channel). /yuki follows the same limits.",
+     "changes": ["people who spam him get ignored for a bit (a short cooldown, a limit per minute, and a cap on how many replies can pile up in one server). /yuki follows the same limits.",
                  "everything he says now goes through a last code check: slurs, invite links, emails and phone numbers are blocked, repeated text is cut down, and he can only ping a few different people per reply, never the same one twice. replies are capped at 3 messages.",
                  "edited messages are checked by moderation too, and moderation now reads the whole message instead of just the first 1000 characters.",
                  "stricter persona checks, and chat lines can't pretend to be someone else anymore. rules are only read from messages by staff or bots in channels members can't write in.",
