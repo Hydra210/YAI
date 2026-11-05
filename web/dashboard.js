@@ -153,7 +153,6 @@
       $('account-name').textContent = state.user.username || 'Discord user';
       setAvatar($('account-avatar'), state.user.username, state.user.avatar_url);
       $('account-area').hidden = false;
-      $('topbar-caption').hidden = true;
       $('app-shell').hidden = false;
       $('logout-button').disabled = !state.csrf;
       await loadGuilds();
@@ -260,9 +259,9 @@
       item.disabled = state.busy;
       item.append(icon('settings'), el('span', '', section.title || id));
       if (sectionDirty(section)) {
-        const badge = el('span', 'nav-dirty');
-        badge.setAttribute('aria-label', 'unsaved changes');
-        item.append(badge);
+        const label = el('span', 'nav-unsaved', 'unsaved');
+        label.setAttribute('aria-label', 'Unsaved changes in this section');
+        item.append(label);
       }
       if (id === state.sectionId) item.setAttribute('aria-current', 'page');
       nav.append(item);
@@ -304,14 +303,14 @@
     if (state.loadError) {
       wrap.append(breadcrumb('dashboard', 'workspace'));
       const retry = () => state.loadError.scope === 'guilds' ? loadGuilds() : loadGuild(state.guildId);
-      const box = emptyState('!', 'couldn’t load your workspace', state.loadError.message, 'try again', retry);
+      const box = emptyState('couldn’t load your workspace', state.loadError.message, 'try again', retry);
       if (state.loadError.message.startsWith('Your session has expired.')) box.append(loginLink());
       wrap.append(box);
       return;
     }
     if (!state.guilds.length) {
       wrap.append(breadcrumb('dashboard', 'workspace'));
-      wrap.append(emptyState('✳', 'no servers available', 'There aren’t any servers available to manage right now. Check that Yuki is in your server and that you have the required permissions.', 'check again', loadGuilds));
+      wrap.append(emptyState('no servers available', 'There aren’t any servers available to manage right now. Check that Yuki is in your server and that you have the required permissions.', 'check again', loadGuilds));
       return;
     }
     if (!state.snapshot) return;
@@ -347,25 +346,25 @@
     link.href = '/dashboard/login';
     return link;
   }
-  function emptyState(symbol, title, description, action, handler) {
+  function emptyState(title, description, action, handler) {
     const box = el('div', 'panel empty-state');
-    box.append(el('div', 'empty-icon', symbol), el('h2', '', title), el('p', '', description));
+    box.append(el('h2', '', title), el('p', '', description));
     if (action) box.append(button(action, 'button', handler));
     return box;
   }
-  function heading(eyebrow, title, description) {
+  function heading(title, description = '') {
     const row = el('div', 'page-heading');
     const copyNode = el('div', 'heading-copy');
-    copyNode.append(el('div', 'eyebrow heading-eyebrow', eyebrow));
     const titleNode = el('h1', '', title);
     titleNode.id = 'page-heading';
     titleNode.tabIndex = -1;
-    copyNode.append(titleNode, el('p', '', description));
+    copyNode.append(titleNode);
+    if (description) copyNode.append(el('p', '', description));
     row.append(copyNode);
     return row;
   }
   function renderOverview(wrap) {
-    const page = heading('YOUR WORKSPACE', 'overview', 'A little snapshot of your server and everything you can manage.');
+    const page = heading('Overview');
     const actions = el('div', 'heading-actions');
     const refresh = button('refresh server rules', 'button', refreshRules);
     refresh.prepend(icon('refresh'));
@@ -374,25 +373,21 @@
     page.append(actions);
     wrap.append(page);
     if (hasChanges()) wrap.append(alertBox('warning', 'You have unsaved changes in your settings. Return to a section to save or discard them.'));
-    const panel = el('div', 'panel welcome-panel');
-    const main = el('div', 'welcome-main');
-    const avatar = el('span', 'guild-avatar avatar');
+    const panel = el('div', 'panel server-summary');
+    const main = el('div', 'server-summary-main');
+    const avatar = el('span', 'server-avatar avatar');
     setAvatar(avatar, state.snapshot.guild.name, state.snapshot.guild.icon_url);
     const info = el('div');
-    info.append(el('div', 'small-label', 'CURRENT SERVER'), el('h2', '', state.snapshot.guild.name || 'Unnamed server'), el('p', '', 'Your server settings, all in one place.'));
+    info.append(el('div', 'small-label', 'SERVER'), el('h2', '', state.snapshot.guild.name || 'Unnamed server'));
     main.append(avatar, info);
-    const tag = el('div', 'welcome-tag');
-    tag.append(el('span'), document.createTextNode('workspace'));
-    panel.append(main, tag);
+    panel.append(main);
     wrap.append(panel);
     const sections = state.snapshot.sections;
     const top = el('div', 'overview-title');
-    const text = el('div');
-    text.append(el('h2', '', 'server settings'), el('p', '', 'Choose a section to make it your own.'));
-    top.append(text, el('span', 'section-count', `${sections.length} ${sections.length === 1 ? 'section' : 'sections'}`));
+    top.append(el('h2', '', 'Server settings'));
     wrap.append(top);
     if (!sections.length) {
-      wrap.append(emptyState('✳', 'no settings available', 'There are no settings sections available for this server right now.'));
+      wrap.append(emptyState('no settings available', 'There are no settings sections available for this server right now.'));
     } else {
       const grid = el('div', 'section-grid');
       sections.forEach((section) => {
@@ -404,26 +399,23 @@
         cardTop.append(cardIcon, el('span', 'card-arrow', '↗'));
         card.append(cardTop, el('strong', '', section.title || String(section.id)), el('p', '', section.description || 'Manage this section’s settings.'));
         if (sectionDirty(section)) {
-          const dot = el('span', 'mini-dirty');
-          dot.setAttribute('aria-label', 'unsaved changes');
-          card.append(dot);
+          const label = el('span', 'unsaved-label', 'unsaved');
+          label.setAttribute('aria-label', 'Unsaved changes in this section');
+          card.append(label);
         }
         grid.append(card);
       });
       wrap.append(grid);
     }
-    const footer = el('div', 'footnote');
-    footer.append(el('span', '', '✳'), document.createTextNode('Thoughtful settings for a better space.'));
-    wrap.append(footer);
   }
   function renderSection(wrap, section) {
-    const page = heading('SERVER SETTINGS', section.title || String(section.id), section.description || 'Manage the settings in this section.');
+    const page = heading(section.title || String(section.id), section.description || 'Manage the settings in this section.');
     wrap.append(page);
     const panel = el('div', 'panel settings-panel');
     const head = el('div', 'settings-panel-head');
     const headCopy = el('div');
-    headCopy.append(el('h2', 'panel-title', 'settings'), el('p', '', 'Changes are only applied when you save.'));
-    head.append(headCopy, el('span', 'panel-marker', `${section.fields.length} ${section.fields.length === 1 ? 'setting' : 'settings'}`));
+    headCopy.append(el('h2', 'panel-title', 'Settings'), el('p', '', 'Changes apply after saving.'));
+    head.append(headCopy);
     panel.append(head);
     const form = el('fieldset', 'field-list');
     form.disabled = state.busy;
@@ -581,8 +573,8 @@
     if (status) {
       status.classList.toggle('dirty', count > 0);
       const locked = count - editableCount;
-      const message = count ? `${count} unsaved ${count === 1 ? 'change' : 'changes'}${locked ? ` · ${locked} read-only` : ''}` : 'no unsaved changes';
-      status.replaceChildren(el('span', 'status-dot'), document.createTextNode(message));
+      const message = count ? `${count} unsaved ${count === 1 ? 'change' : 'changes'}${locked ? ` · ${locked} read-only` : ''}` : 'All changes saved';
+      status.textContent = message;
     }
     if ($('cancel-button')) $('cancel-button').disabled = state.busy || !count;
     if ($('save-button')) $('save-button').disabled = state.busy || !editableCount || !state.csrf;
