@@ -21,7 +21,7 @@
       <span class="account-avatar avatar" id="account-avatar" aria-hidden="true"></span>
       <button class="top-signout" id="logout-button" type="button">sign out <span aria-hidden="true">↗</span></button>
     </div>
-    <span class="topbar-caption" id="topbar-caption">a quieter way to manage your server <span aria-hidden="true">✳</span></span>
+    <span class="topbar-caption" id="topbar-caption" hidden></span>
   </header>
 
   <main id="main-content" tabindex="-1">
@@ -31,29 +31,17 @@
     </div>
 
     <section class="login-page" id="login-page" hidden aria-labelledby="login-heading">
-      <div class="login-wrap">
-        <div class="login-copy">
-          <div class="eyebrow light-eyebrow"><span class="eyebrow-dot"></span> your server, thoughtfully managed</div>
-          <h1 id="login-heading">a little more control.<br><span>a lot less noise.</span></h1>
-          <p>One calm place for your server’s Yuki settings. Sign in to see the servers you can manage.</p>
-          <div class="login-note"><span class="line-icon" aria-hidden="true">✳</span><span>made for the communities<br>you care about.</span></div>
+      <div class="login-card">
+        <div class="login-card-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M6.5 10V7.5a5.5 5.5 0 0 1 11 0V10M5.5 10h13v9h-13z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 13.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </div>
-        <div class="login-card">
-          <div class="login-card-top"><span class="small-label">welcome to yuki</span><span class="card-index">01 / 01</span></div>
-          <div class="login-card-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M6.5 10V7.5a5.5 5.5 0 0 1 11 0V10M5.5 10h13v9h-13z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 13.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </div>
-          <h2>let’s get you in.</h2>
-          <p>Connect with Discord to securely access the servers you’re allowed to manage.</p>
-          <a class="button button-dark login-button" id="login-button" href="/dashboard/login">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="M19.7 5.5A17 17 0 0 0 15.5 4l-.5 1.1a15.7 15.7 0 0 0-6 0L8.5 4a17 17 0 0 0-4.2 1.5C1.6 9.4.9 13.2 1.2 17a17.2 17.2 0 0 0 5.2 2.6l1.1-1.8a11.2 11.2 0 0 1-1.7-.8l.4-.3a12.2 12.2 0 0 0 11.6 0l.4.3c-.6.3-1.1.6-1.7.8l1.1 1.8a17.2 17.2 0 0 0 5.2-2.6c.4-4.4-.7-8.2-3.1-11.5ZM8.5 14.6c-.9 0-1.6-.8-1.6-1.8s.7-1.8 1.6-1.8 1.6.8 1.6 1.8-.7 1.8-1.6 1.8Zm7 0c-.9 0-1.6-.8-1.6-1.8s.7-1.8 1.6-1.8 1.6.8 1.6 1.8-.7 1.8-1.6 1.8Z"/></svg>
-            continue with Discord <span class="button-arrow" aria-hidden="true">↗</span>
-          </a>
-          <div class="login-unavailable" id="login-unavailable" hidden>Discord sign-in isn’t configured yet. Ask the bot administrator to enable it.</div>
-          <div class="login-card-footer"><span class="security-dot"></span> secure sign-in through Discord</div>
-        </div>
+        <h1 id="login-heading">Sign in</h1>
+        <a class="button button-dark login-button" id="login-button" href="/dashboard/login">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="M19.7 5.5A17 17 0 0 0 15.5 4l-.5 1.1a15.7 15.7 0 0 0-6 0L8.5 4a17 17 0 0 0-4.2 1.5C1.6 9.4.9 13.2 1.2 17a17.2 17.2 0 0 0 5.2 2.6l1.1-1.8a11.2 11.2 0 0 1-1.7-.8l.4-.3a12.2 12.2 0 0 0 11.6 0l.4.3c-.6.3-1.1.6-1.7.8l1.1 1.8a17.2 17.2 0 0 0 5.2-2.6c.4-4.4-.7-8.2-3.1-11.5ZM8.5 14.6c-.9 0-1.6-.8-1.6-1.8s.7-1.8 1.6-1.8 1.6.8 1.6 1.8-.7 1.8-1.6 1.8Zm7 0c-.9 0-1.6-.8-1.6-1.8s.7-1.8 1.6-1.8 1.6.8 1.6 1.8-.7 1.8-1.6 1.8Z"/></svg>
+          Continue with Discord
+        </a>
+        <div class="login-unavailable" id="login-unavailable" hidden>Discord sign-in isn’t configured. Set <code>DISCORD_CLIENT_ID</code>, <code>DISCORD_CLIENT_SECRET</code>, and <code>DISCORD_REDIRECT_URI</code> in Render.</div>
       </div>
-      <div class="login-footer"><span>yuki / dashboard</span><span>made for a little more peace of mind.</span></div>
     </section>
 
     <section class="app-shell" id="app-shell" hidden aria-label="Server dashboard">
