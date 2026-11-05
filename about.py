@@ -12,12 +12,15 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.4.0"
-VERSION_DATE = "2026-11-04"
-VERSION_NOTE = "edit-trick protection"
+VERSION = "1.18.5.0"
+VERSION_DATE = "2026-11-05"
+VERSION_NOTE = "server dashboard"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.5.0", "date": "2026-11-05", "title": "server dashboard",
+     "changes": ["added a Discord-login dashboard for managing Yuki's server settings from the web service.",
+                 "the dashboard checks server membership and moderation permissions; administrator-only controls stay restricted."]},
     {"version": "1.18.4.0", "date": "2026-11-04", "title": "edit-trick protection",
      "changes": ["if someone gets him to say yes to something harmless and then edits their message into something bad, he now catches it: his answer is deleted right away and he replies to the edited message with a callout. works in servers and DMs.",
                  "he judges every real edit: plain code checks first (a new slur, swear, invite, link, email or phone number is deleted instantly), then he reads the original, his answer and the edit to decide if it's a trick. harmless edits like typo fixes or added detail get no reaction at all. if the check fails or someone edits the same message too many times, he treats it as a trick.",
@@ -175,7 +178,8 @@ ABOUT = {
         "aimed at people, swearing, links, invites, personal info (emails, phones, ips), mass pings, spam, all caps. he replies, quotes the exact rule "
         "and pings staff. he never deletes anything and skips staff. the checks are plain code, not ai. staff manage it with `/mod`: status, test, "
         "refresh, skiprules (rules he shouldn't enforce), words (swear exceptions), channels (channels he never moderates), access (who can use /mod), "
-        "setting, note, staffrole. it can't catch sarcasm, images or other languages."
+        "setting, note, staffrole. the web service also has a Discord-login server dashboard at `/dashboard` for staff to configure Yuki. "
+        "it can't catch sarcasm, images or other languages."
     ),
     "skills": (
         "tools: read the server rules, pinned messages, channels, roles, user and server info, search old messages, recall what he knows about someone, "

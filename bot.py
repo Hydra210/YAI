@@ -8,6 +8,7 @@ import logging
 import os
 import random
 import re
+import sys
 import time
 
 import discord
@@ -304,7 +305,11 @@ async def start_web_server():
     app.router.add_get("/keys.json", keys_json)
     app.router.add_post("/keys/add", keys_edit)
     app.router.add_post("/keys/remove", keys_edit)
-    runner = web.AppRunner(app)
+    # The dashboard shares the bot's event loop and in-memory settings cache.
+    from dashboard_auth import setup_dashboard
+    setup_dashboard(app, sys.modules[__name__])
+    # OAuth callbacks contain short-lived codes in the query string; never log them.
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     log.info("health server listening on port %s (key status page: /keys, version %s)", PORT, about.VERSION)

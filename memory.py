@@ -14,6 +14,7 @@ All methods are synchronous and thread-safe; call them with asyncio.to_thread fr
 The fast_* readers only touch RAM and are safe to call straight from async code.
 """
 
+import copy
 import json
 import logging
 import re
@@ -127,6 +128,16 @@ def _json(raw, default):
         return default
 
 
+class FactConflictError(ValueError):
+    """A fact's cached or persisted value no longer matches its baseline."""
+
+
+def _same_json(left, right):
+    # Unlike Python equality, JSON distinguishes true from 1. JSON object key
+    # ordering is not meaningful; arrays remain ordered.
+    return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+
 class Memory:
     def __init__(self, database_url: str, retention_days: int = 90, pool_max: int = 5):
         if not (database_url or "").strip():
@@ -144,6 +155,8 @@ class Memory:
         self._do(initialize)
         self.optouts = {r["user_id"] for r in self._do(self._fetch("SELECT user_id FROM optouts"))}
         self.fast: dict[int, dict[str, Any]] = {}
+        # Never acquired by fast readers, which may run on the event loop.
+        self._fast_write_lock = threading.RLock()
         for r in self._do(self._fetch("SELECT scope, key, value FROM facts")):
             self.fast.setdefault(r["scope"], {})[r["key"]] = _json(r["value"], None)
         log.info(
@@ -529,18 +542,122 @@ class Memory:
     def fast_all(self, scope) -> dict:
         return dict(self.fast.get(scope, {}))
 
+    @staticmethod
+    def _lock_facts_scope(cur, scope):
+        # Also coordinates Memory instances/processes using these writer methods,
+        # including missing rows which SELECT FOR UPDATE cannot lock.
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"yai-facts-scope:{scope}",))
+
     def fast_set(self, scope, key, value):
-        """Write to Postgres first, then to the RAM cache."""
-        self._exec(
-            "INSERT INTO facts(scope, key, value, updated) VALUES (%s, %s, %s, %s) "
-            "ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value, updated = EXCLUDED.updated",
-            (scope, key, json.dumps(value), int(time.time())),
-        )
-        self.fast.setdefault(scope, {})[key] = value
+        """Write to Postgres first, then publish a detached cache value."""
+        encoded = json.dumps(value)
+        detached = json.loads(encoded)
+        with self._fast_write_lock:
+            def work(cur):
+                self._lock_facts_scope(cur, scope)
+                cur.execute(
+                    "INSERT INTO facts(scope, key, value, updated) VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value, updated = EXCLUDED.updated",
+                    (scope, key, encoded, int(time.time())),
+                )
+            self._do(work, retries=0)
+            self.fast[scope] = {**self.fast.get(scope, {}), key: detached}
+
+    def fast_merge(self, scope, key, patch, default=None):
+        """Atomically merge mapping keys into a fact without clobbering siblings.
+
+        Unlike reading ``fast_get`` and writing the whole mapping later, this
+        reads the current database value under the same scope lock as its write.
+        Use it for independent setting changes that may overlap dashboard saves.
+        """
+        if not isinstance(patch, dict):
+            raise ValueError("A mapping patch is required.")
+        encoded_patch = json.dumps(patch)
+        clean_patch = json.loads(encoded_patch)
+        with self._fast_write_lock:
+            def work(cur):
+                self._lock_facts_scope(cur, scope)
+                cur.execute("SELECT value FROM facts WHERE scope = %s AND key = %s FOR UPDATE", (scope, key))
+                row = cur.fetchone()
+                current = json.loads(row["value"]) if row else copy.deepcopy(default)
+                if not isinstance(current, dict):
+                    raise ValueError(f"Saved {key} is not a mapping; refusing to overwrite it.")
+                updated = {**current, **clean_patch}
+                encoded = json.dumps(updated)
+                cur.execute(
+                    "INSERT INTO facts(scope, key, value, updated) VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value, updated = EXCLUDED.updated",
+                    (scope, key, encoded, int(time.time())),
+                )
+                return encoded
+            encoded = self._do(work, retries=0)
+            detached = json.loads(encoded)
+            self.fast[scope] = {**self.fast.get(scope, {}), key: detached}
+            return copy.deepcopy(detached)
 
     def fast_delete(self, scope, key):
-        self._exec("DELETE FROM facts WHERE scope = %s AND key = %s", (scope, key))
-        self.fast.get(scope, {}).pop(key, None)
+        with self._fast_write_lock:
+            def work(cur):
+                self._lock_facts_scope(cur, scope)
+                cur.execute("DELETE FROM facts WHERE scope = %s AND key = %s", (scope, key))
+            self._do(work, retries=0)
+            updated = dict(self.fast.get(scope, {}))
+            updated.pop(key, None)
+            self.fast[scope] = updated
+
+    def fast_compare_and_update(self, scope, expected, updates):
+        """Compare facts and atomically write a batch in one Postgres transaction.
+
+        expected maps keys to (present: bool, old JSON value); updates maps a
+        subset of those keys to new JSON values (None stores JSON null). Raises
+        FactConflictError if RAM or Postgres differs. Writers must call this
+        synchronously in a worker thread, never on the bot's event loop.
+
+        All cooperating fact writers take the same scope advisory lock, even
+        across processes. A caller that reads before invoking fast_set still has
+        an unprotected read/modify/write window. External SQL that ignores the
+        advisory lock cannot be made fully safe for absent/read-only facts.
+        """
+        if not isinstance(expected, dict) or not isinstance(updates, dict) or not set(updates) <= set(expected):
+            raise ValueError("Fact updates require an expected value for each key.")
+        if any(not isinstance(k, str) or not isinstance(v, (tuple, list)) or len(v) != 2 or type(v[0]) is not bool
+               for k, v in expected.items()):
+            raise ValueError("Invalid fact baseline.")
+        expected = copy.deepcopy(expected)
+        # Serialize before any transaction so encoding failures cannot cause
+        # partial writes, and publish exactly the same JSON values to the cache.
+        encoded = {key: json.dumps(value) for key, value in updates.items()}
+        detached = {key: json.loads(value) for key, value in encoded.items()}
+        with self._fast_write_lock:
+            cached = self.fast.get(scope, {})
+            for key, (present, old) in expected.items():
+                if (key in cached) != present or (present and not _same_json(cached[key], old)):
+                    raise FactConflictError("Settings changed while saving; refresh and try again.")
+
+            def work(cur):
+                self._lock_facts_scope(cur, scope)
+                cur.execute("SELECT key, value FROM facts WHERE scope = %s AND key = ANY(%s) FOR UPDATE",
+                            (scope, list(expected)))
+                rows = {row["key"]: json.loads(row["value"]) for row in cur.fetchall()}
+                for key, (present, old) in expected.items():
+                    if (key in rows) != present or (present and not _same_json(rows[key], old)):
+                        raise FactConflictError("Settings changed while saving; refresh and try again.")
+                now = int(time.time())
+                for key, value in encoded.items():
+                    if expected[key][0]:
+                        cur.execute("UPDATE facts SET value = %s, updated = %s WHERE scope = %s AND key = %s",
+                                    (value, now, scope, key))
+                    else:
+                        # A non-cooperating writer can insert an absent row
+                        # between the read and write; never overwrite it.
+                        cur.execute("INSERT INTO facts(scope, key, value, updated) VALUES (%s, %s, %s, %s) "
+                                    "ON CONFLICT (scope, key) DO NOTHING", (scope, key, value, now))
+                    if cur.rowcount != 1:
+                        raise FactConflictError("Settings changed while saving; refresh and try again.")
+            # A connection failure at COMMIT can have an unknown outcome, so do
+            # not automatically retry and do not publish an unconfirmed cache.
+            self._do(work, retries=0)
+            self.fast[scope] = {**self.fast.get(scope, {}), **detached}
 
     # ---------- moderation log ----------
 

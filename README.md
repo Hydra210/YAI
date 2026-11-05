@@ -237,6 +237,39 @@ cp .env.example .env   # then fill in your tokens
 python bot.py
 ```
 
+## Server dashboard (`/dashboard`)
+
+The dashboard runs on Yuki's Render web service and uses his existing
+Postgres-backed settings. Open `https://<your-render-url>/dashboard` and sign
+in with Discord. It lists only servers where Yuki is installed and where your
+current Discord membership and Yuki moderation access permit configuration.
+Some controls, including moderation access and low-level slur exceptions, remain
+restricted to the server owner or an administrator.
+
+To enable Discord login:
+
+1. In the Discord Developer Portal, open the **same application** as the Yuki
+   bot. Under OAuth2, register `https://<your-render-url>/dashboard/callback` as
+   a redirect URL. The URL must match exactly, including the path.
+2. Add `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, and
+   `DISCORD_REDIRECT_URI` to the Render service's environment. Set the redirect
+   URI to the exact URL registered above. Keep the client secret private; never
+   commit it or share it in a screenshot.
+3. Restart or redeploy the service, then visit `/dashboard`. The login asks for
+   Discord's `identify` and `guilds` scopes; it never asks for your password.
+
+For local development, register `http://localhost:10000/dashboard/callback`
+as a separate redirect and use that exact value for `DISCORD_REDIRECT_URI`.
+The dashboard is served by `python bot.py` (the Render entrypoint), not by the
+limited Vercel `app.py` entrypoint. Sessions are temporary and require signing
+in again after a bot restart. Global bot environment variables, bot-owner-only
+settings and individual users' private memory are not exposed as server settings.
+Sessions and OAuth state are kept in this process's memory, so run a single web
+instance (or configure sticky routing); users sign in again after restarts. The
+bot's aiohttp access log suppresses OAuth callback requests. If a proxy, CDN,
+tracing service or custom logger is added in front, configure it not to record
+the callback query string, which contains a short-lived authorization code.
+
 ## Key status page (`/keys`)
 
 Open `https://<your-render-url>/keys` to see how many Groq keys work out of how many, with a status next to each key (shown only as its number and
@@ -258,6 +291,9 @@ Adding keys only works on Render's own web server (`bot.py`), not on the Vercel 
 | Name | Required | Description |
 |---|---|---|
 | `DISCORD_TOKEN` | yes | Bot token from the Discord developer portal |
+| `DISCORD_CLIENT_ID` | for dashboard | OAuth2 application/client ID of the bot application |
+| `DISCORD_CLIENT_SECRET` | for dashboard | OAuth2 client secret; keep private |
+| `DISCORD_REDIRECT_URI` | for dashboard | Exactly registered callback URL, ending in `/dashboard/callback` |
 | `GROQ_API_KEYS` | yes | One or more Groq keys, comma separated: `gsk_key1,gsk_key2,gsk_key3`. Yuki rotates through them and skips ones that are rate limited. A single `GROQ_API_KEY` also works. |
 | `GROQ_MODEL` | no | Groq model name (default `openai/gpt-oss-120b`) |
 | `DATABASE_URL` | **yes** | Postgres connection string. All memory lives here (see Postgres setup). |

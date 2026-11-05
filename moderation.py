@@ -1122,9 +1122,10 @@ class Mod:
         async def setting(i: discord.Interaction, name: app_commands.Choice[str], value: app_commands.Choice[str]):
             if not allowed(i):
                 return await deny(i)
-            st = dict(mod.settings(i.guild.id))
-            st[name.value] = value.value == "on"
-            await mod.run(mod.mem.fast_set, i.guild.id, "settings", st)
+            # Merge just this option under the shared Postgres fact lock so a
+            # dashboard edit to another moderation option isn't overwritten.
+            await mod.run(mod.mem.fast_merge, i.guild.id, "settings",
+                          {name.value: value.value == "on"}, {})
             await i.response.send_message(f"{name.value} is now {value.value}.", ephemeral=True)
 
         @group.command(name="skiprules", description="pick which of the server's rules yuki should NOT enforce")
