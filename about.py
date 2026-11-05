@@ -12,12 +12,19 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.4.0"
-VERSION_DATE = "2026-11-04"
-VERSION_NOTE = "edit-trick protection"
+VERSION = "1.18.6.0"
+VERSION_DATE = "2026-11-05"
+VERSION_NOTE = "dashboard-first server settings"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.6.0", "date": "2026-11-05", "title": "server setup moves to the dashboard",
+     "changes": ["the Discord-login dashboard now handles server setup, including moderation, word filters, access, slang learning, ping policy and server Yuki bans.",
+                 "removed duplicate configuration slash commands. `/mod status`, `/mod test`, `/mod refresh`, `/slang status`, `/slang list`, `/pingstatus` and `/yukiban list` remain for diagnostics.",
+                 "per-server Yuki bans are managed in the dashboard; bot-owner-only global ban commands remain separate."]},
+    {"version": "1.18.5.0", "date": "2026-11-05", "title": "server dashboard",
+     "changes": ["added a Discord-login dashboard for managing Yuki's server settings from the web service.",
+                 "the dashboard checks server membership and moderation permissions; administrator-only controls stay restricted."]},
     {"version": "1.18.4.0", "date": "2026-11-04", "title": "edit-trick protection",
      "changes": ["if someone gets him to say yes to something harmless and then edits their message into something bad, he now catches it: his answer is deleted right away and he replies to the edited message with a callout. works in servers and DMs.",
                  "he judges every real edit: plain code checks first (a new slur, swear, invite, link, email or phone number is deleted instantly), then he reads the original, his answer and the edit to decide if it's a trick. harmless edits like typo fixes or added detail get no reaction at all. if the check fails or someone edits the same message too many times, he treats it as a trick.",
@@ -156,12 +163,12 @@ CHANGELOG = [
 ABOUT = {
     "overview": (
         "yuki is a super casual discord bot that uses ai for everything and talks like his creator. he reads a lot of what's said in a server, remembers it, "
-        "and has real tools for looking stuff up. now and then he reacts to a message with an emoji (staff can turn that off with `/mod setting`). people can @mention him, use /yuki, dm him, or start a message with 'yuki'."
+        "and has real tools for looking stuff up. now and then he reacts to a message with an emoji (staff can turn that off in the dashboard). people can @mention him, use /yuki, dm him, or start a message with 'yuki'."
     ),
     "talk": (
         "ways to talk to him: @mention him in a server, `/yuki question: ...`, dm him (he answers every dm), or start a message with 'yuki'. "
         "`/memory` shows or wipes what he knows about you, `/personal-memory` saves, lists, or removes personal notes shared with Yuki Desktop, "
-        "`/persona` shows or resets how he acts with you, `/meme` makes captioned images, and `/about` shows this info. staff also have `/mod` and `/slang`."
+        "`/persona` shows or resets how he acts with you, `/meme` makes captioned images, and `/about` shows this info. staff configure servers in the Discord-login dashboard; `/mod` and `/slang` keep read-only status and diagnostic commands."
     ),
     "memory": (
         "memory: he keeps messages per server in a database, searches old ones (like 'what did bob say about valorant'), and writes short "
@@ -173,9 +180,8 @@ ABOUT = {
     "moderation": (
         "moderation: he reads the server's rules himself and reminds people who break the ones code can check: slurs, bullying and insults "
         "aimed at people, swearing, links, invites, personal info (emails, phones, ips), mass pings, spam, all caps. he replies, quotes the exact rule "
-        "and pings staff. he never deletes anything and skips staff. the checks are plain code, not ai. staff manage it with `/mod`: status, test, "
-        "refresh, skiprules (rules he shouldn't enforce), words (swear exceptions), channels (channels he never moderates), access (who can use /mod), "
-        "setting, note, staffrole. it can't catch sarcasm, images or other languages."
+        "and pings staff. he never deletes anything and skips staff. the checks are plain code, not ai. staff configure moderation in the Discord-login `/dashboard`; `/mod status`, `/mod test` and `/mod refresh` remain for diagnostics. "
+        "it can't catch sarcasm, images or other languages."
     ),
     "skills": (
         "tools: read the server rules, pinned messages, channels, roles, user and server info, search old messages, recall what he knows about someone, "
@@ -186,8 +192,7 @@ ABOUT = {
     "slang": (
         "slang: every now and then, if someone's message has a word he doesn't know and can't figure out from the chat, he asks that person what it means, "
         "even when nobody is talking to him. he only does it sometimes (a dice roll, cooldowns, a daily limit) and never asks about the same word twice. "
-        "when someone explains it he saves it for that server. staff use `/slang`: on, off, status, list (what he learned), forget (remove a word) and channels "
-        "(add, remove, list, clear) to pick channels or categories where he never asks. it's on by default. he skips people who used `/memory forget`."
+        "when someone explains it he saves it for that server. it is on by default. staff configure it and its excluded channels in the Discord-login dashboard; `/slang status` and `/slang list` are read-only. he skips people who used `/memory forget`."
     ),
     "personas": (
         "personas: tell him 'talk like a pirate', 'call me boss', 'keep it short', 'be nicer to me' and he saves it just for you. nobody else sees or gets it. "

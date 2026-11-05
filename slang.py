@@ -8,8 +8,8 @@ How it works (all automatic, nobody has to talk to him):
   3. he replies to that message asking what it means. the person (or anyone replying to his question) explains, a second small
      call turns that into a short definition, and he saves it per server. learned slang is then part of what he knows there.
 
-Staff control it with /slang (on, off, status, list, forget, channels). Everything is saved per server in the same facts table
-as the rest of his fast memory, so it survives restarts.
+Staff can check learned slang with /slang status and /slang list. Slang controls live in the web dashboard (/dashboard).
+Everything is saved per server in the same facts table as the rest of his fast memory, so it survives restarts.
 """
 
 from __future__ import annotations
@@ -127,9 +127,6 @@ class Slang:
         out = {**DEFAULT_SETTINGS, **saved}
         out["off_channels"] = [int(x) for x in out.get("off_channels") or [] if str(x).isdigit()]
         return out
-
-    async def save_settings(self, gid: int, st: dict) -> None:
-        await self.run(self.mem.fast_set, gid, "slang_settings", {"enabled": bool(st["enabled"]), "off_channels": list(st["off_channels"])})
 
     def terms(self, gid: int) -> dict:
         raw = self.mem.fast_get(gid, "slang_terms") or {}
@@ -368,9 +365,9 @@ class Slang:
         sl = self
         group = app_commands.Group(
             name="slang",
-            description="yuki asking what slang means so he can learn it",
+            description="check slang Yuki learned; controls are in the web dashboard",
             guild_only=True,
-            default_permissions=None,  # same as /mod: the real check is mod.can_manage
+            default_permissions=None,  # same access policy as the moderation controls
         )
 
         def allowed(i: discord.Interaction) -> bool:
@@ -378,9 +375,10 @@ class Slang:
 
         async def deny(i: discord.Interaction):
             await i.response.send_message(
-                "you don't have access to that here. ask the server owner or an admin to add you (`/mod access`).", ephemeral=True)
+                "you don't have access to that here. ask the server owner or an admin to add you in the web dashboard (`/dashboard`).",
+                ephemeral=True)
 
-        @group.command(name="status", description="is slang learning on here, and where is it off")
+        @group.command(name="status", description="check slang learning status; controls live in the web dashboard")
         async def status(i: discord.Interaction):
             if not allowed(i):
                 return await deny(i)
@@ -390,37 +388,21 @@ class Slang:
                 "**off in:** " + (", ".join(f"<#{c}>" for c in st["off_channels"]) or "no channels, he can ask anywhere he can talk"),
                 f"**learned so far:** {len(sl.terms(i.guild.id))} words",
                 f"he looks at about {int(CHECK_CHANCE * 100)}% of messages and asks at most {MAX_PER_DAY} times a day here.",
+                "slang controls live in the web dashboard (`/dashboard`).",
             ]
             if CHECK_CHANCE <= 0:
                 lines.append("the bot's owner set SLANG_CHANCE to 0, so it's off in every server no matter what.")
             await i.response.send_message("\n".join(lines), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
-        @group.command(name="on", description="let yuki ask what slang means (now and then)")
-        async def turn_on(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            st = sl.settings(i.guild.id)
-            st["enabled"] = True
-            await sl.save_settings(i.guild.id, st)
-            extra = " (heads up: the bot's owner set SLANG_CHANCE to 0, so it stays off everywhere.)" if CHECK_CHANCE <= 0 else ""
-            await i.response.send_message("ok, i'll ask what slang means now and then." + extra, ephemeral=True)
-
-        @group.command(name="off", description="yuki stops asking what slang means")
-        async def turn_off(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            st = sl.settings(i.guild.id)
-            st["enabled"] = False
-            await sl.save_settings(i.guild.id, st)
-            await i.response.send_message("ok, no more slang questions. what he already learned stays (`/slang forget` removes words).", ephemeral=True)
-
-        @group.command(name="list", description="see the slang yuki learned in this server")
+        @group.command(name="list", description="see the slang Yuki learned; controls live in the web dashboard")
         async def list_terms(i: discord.Interaction):
             if not allowed(i):
                 return await deny(i)
             items = sorted(sl.terms(i.guild.id).items())
             if not items:
-                return await i.response.send_message("he hasn't learned any slang here yet.", ephemeral=True)
+                return await i.response.send_message(
+                    "he hasn't learned any slang here yet. slang controls live in the web dashboard (`/dashboard`).",
+                    ephemeral=True)
             out, used = [], 0
             for term, v in items:
                 line = f"**{term}**: {v['meaning']}"
@@ -429,72 +411,7 @@ class Slang:
                     break
                 out.append(line)
                 used += len(line) + 1
+            out.append("slang controls live in the web dashboard (`/dashboard`).")
             await i.response.send_message("\n".join(out), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-
-        @group.command(name="forget", description="remove a word he learned (he can ask about it again later)")
-        @app_commands.describe(term="the word to remove")
-        async def forget(i: discord.Interaction, term: str):
-            if not allowed(i):
-                return await deny(i)
-            gid, key = i.guild.id, term.strip().lower()
-            learned, skipped = sl.terms(gid), sl._skipped(gid)
-            if key not in learned and key not in skipped:
-                return await i.response.send_message(f"he doesn't know \"{key}\".", ephemeral=True)
-            if key in learned:
-                learned.pop(key)
-                await sl.run(sl.mem.fast_set, gid, "slang_terms", learned)
-            if key in skipped:
-                await sl.run(sl.mem.fast_set, gid, "slang_skipped", [s for s in skipped if s != key])
-            await i.response.send_message(f"ok, forgot \"{key}\".", ephemeral=True)
-
-        # ---------------------------------------------------------------- channels where he never asks
-        chans = app_commands.Group(name="channels", description="channels where yuki never asks about slang", parent=group)
-
-        @chans.command(name="add", description="yuki won't ask about slang in this channel (or every channel in this category)")
-        @app_commands.describe(channel="a text, voice, forum or announcement channel, or a whole category")
-        async def channels_add(i: discord.Interaction, channel: discord.abc.GuildChannel):
-            if not allowed(i):
-                return await deny(i)
-            st = sl.settings(i.guild.id)
-            if channel.id in st["off_channels"]:
-                return await i.response.send_message(f"{channel.mention} is already on the list.", ephemeral=True)
-            if len(st["off_channels"]) >= MAX_OFF_CHANNELS:
-                return await i.response.send_message(f"that's {MAX_OFF_CHANNELS} already, remove one first.", ephemeral=True)
-            st["off_channels"].append(channel.id)
-            await sl.save_settings(i.guild.id, st)
-            extra = " that covers every channel inside it too." if isinstance(channel, discord.CategoryChannel) else \
-                " threads inside it are left alone too." if isinstance(channel, (discord.TextChannel, discord.ForumChannel)) else ""
-            await i.response.send_message(f"ok, i won't ask about slang in {channel.mention}.{extra}", ephemeral=True)
-
-        @chans.command(name="remove", description="yuki can ask about slang in this channel (or category) again")
-        @app_commands.describe(channel="the channel or category to put back")
-        async def channels_remove(i: discord.Interaction, channel: discord.abc.GuildChannel):
-            if not allowed(i):
-                return await deny(i)
-            st = sl.settings(i.guild.id)
-            if channel.id not in st["off_channels"]:
-                return await i.response.send_message(f"{channel.mention} wasn't on the list.", ephemeral=True)
-            st["off_channels"].remove(channel.id)
-            await sl.save_settings(i.guild.id, st)
-            await i.response.send_message(f"ok, he can ask in {channel.mention} again.", ephemeral=True)
-
-        @chans.command(name="list", description="see the channels where yuki never asks about slang")
-        async def channels_list(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            ids = sl.settings(i.guild.id)["off_channels"]
-            if not ids:
-                return await i.response.send_message("no exceptions: he can ask in any channel he can talk in.", ephemeral=True)
-            await i.response.send_message("**no slang questions in:** " + ", ".join(f"<#{c}>" for c in ids), ephemeral=True,
-                                          allowed_mentions=discord.AllowedMentions.none())
-
-        @chans.command(name="clear", description="yuki can ask about slang in every channel again")
-        async def channels_clear(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            st = sl.settings(i.guild.id)
-            st["off_channels"] = []
-            await sl.save_settings(i.guild.id, st)
-            await i.response.send_message("list cleared. he can ask in every channel again.", ephemeral=True)
 
         return group

@@ -86,12 +86,12 @@ TIER_LABEL = {"owner": "server owner", "admin": "admin", "mod": "mod/staff", "hi
 DEFAULT_SETTINGS = {"enabled": True, "exempt_staff": True, "slur_fallback": True, "harass_fallback": True, "directed_slurs": True,
                     "reactions": True}  # reactions = his random emoji reactions to messages (not the moderation warning reaction)
 
-# The low-severity slurs a server's admins may choose to allow (/mod words allow_slur). It's a short fixed list on purpose: the n-word
+# The low-severity slurs a server's admins may choose to allow in dashboard settings. It's a short fixed list on purpose: the n-word
 # and every other racial, ethnic or religious slur in the detector can't be allowed by any setting.
 LOW_LEVEL_SLURS = ("retard", "retards", "retarded", "fag", "fags", "faggot", "faggots")
 _SECOND_PERSON = re.compile(r"(?<![a-z0-9])(?:you|u|ya|yu|ur|youre|you're|your|urself|yourself)(?![a-z0-9])")
 
-# used when the server has no rule he could match to slurs: slurs are still checked (turn off with /mod setting)
+# used when the server has no rule he could match to slurs: slurs are still checked (configurable in /dashboard)
 GENERIC_RULES = {
     "slur": {"n": 0, "text": "no slurs or hate speech", "category": "slur", "generic": True},
     "harassment": {"n": 0, "text": "be respectful: no bullying, insults or harassment", "category": "harassment", "generic": True},
@@ -238,73 +238,6 @@ def parse_json(raw: str):
     return data if isinstance(data, dict) else None
 
 
-class SkipRulesView(discord.ui.View):
-    """A dropdown of the server's rules. The ones picked are the rules Yuki won't enforce."""
-
-    def __init__(self, mod: "Mod", user_id: int, gid: int, rules: list, entries: list):
-        super().__init__(timeout=300)
-        self.mod, self.user_id, self.gid, self.rules = mod, user_id, gid, rules[:25]
-        self.chosen = {idx for idx, r in enumerate(self.rules) if entries and mod._is_skipped(r, entries)}
-        options = []
-        for idx, r in enumerate(self.rules):
-            cat = r.get("category")
-            options.append(
-                discord.SelectOption(
-                    label=f"{r['n']}. {r['text']}"[:100],
-                    value=str(idx),
-                    description=(f"checks: {CATEGORY_LABEL[cat]}" if cat in CATEGORY_LABEL else "not auto-checked anyway")[:100],
-                    default=idx in self.chosen,
-                )
-            )
-        self.select = discord.ui.Select(
-            placeholder="pick the rules yuki should NOT enforce", min_values=0, max_values=len(options), options=options
-        )
-        self.select.callback = self.on_select
-        self.add_item(self.select)
-        reset = discord.ui.Button(label="enforce everything again", style=discord.ButtonStyle.secondary)
-        reset.callback = self.on_reset
-        self.add_item(reset)
-
-    def summary(self) -> str:
-        picked = [self.rules[i] for i in sorted(self.chosen)]
-        if not picked:
-            return ("yuki enforces every rule he can check. pick the ones he should leave alone, "
-                    "then close the dropdown to save.")
-        lines = ["**yuki is NOT enforcing:**"]
-        for r in picked:
-            cat = r.get("category")
-            lines.append(f"- rule {r['n']}: {r['text'][:80]}" + (f" ({CATEGORY_LABEL[cat]})" if cat in CATEGORY_LABEL else ""))
-        lines.append("he still knows these rules, he just won't police them. everything else is enforced like before.")
-        if any(r.get("category") == "profanity" for r in picked) and self.mod.words(self.gid)["block"]:
-            lines.append("words you blocked by hand (`/mod words`) are still enforced.")
-        return "\n".join(lines)[:1900]
-
-    async def interaction_check(self, i: discord.Interaction) -> bool:
-        if i.user.id != self.user_id or not self.mod.can_manage(i):
-            await i.response.send_message("that menu isn't yours. run `/mod skiprules` yourself.", ephemeral=True)
-            return False
-        return True
-
-    async def _save(self):
-        entries = [{"n": self.rules[i]["n"], "text": self.rules[i]["text"]} for i in sorted(self.chosen)]
-        if entries:
-            await self.mod.run(self.mod.mem.fast_set, self.gid, "skipped_rules", entries)
-        else:
-            await self.mod.run(self.mod.mem.fast_delete, self.gid, "skipped_rules")
-        for idx, opt in enumerate(self.select.options):
-            opt.default = idx in self.chosen
-
-    async def on_select(self, i: discord.Interaction):
-        self.chosen = {int(v) for v in self.select.values}
-        await self._save()
-        await i.response.edit_message(content=self.summary(), view=self)
-
-    async def on_reset(self, i: discord.Interaction):
-        self.chosen = set()
-        await self._save()
-        await i.response.edit_message(content=self.summary(), view=self)
-
-
 class Mod:
     def __init__(self, client: discord.Client, mem, llm, run):
         """llm(messages, temperature=, max_tokens=) -> str ; run(fn, *args) -> awaitable (to_thread)."""
@@ -421,7 +354,7 @@ class Mod:
         return bool(ids & {c for c in check if c})
 
     def has_exemptions(self, gid: int) -> bool:
-        """Has staff exempted any rule or word (skiprules, allowed swears, allowed slurs, custom word mode)?"""
+        """Has staff exempted any rule or word (excluded rules, allowed swears, allowed slurs, custom word mode)?"""
         w = self.words(gid)
         return bool(self.skipped_entries(gid) or w["allow"] or w["slur_allow"] or w["mode"] == "custom")
 
@@ -826,7 +759,7 @@ class Mod:
         if cat is None:
             return None
         if self.settings(gid)["exempt_staff"] and self.is_staff(message.author):
-            log.info("%s flagged for %s but skipped: they're staff (use /mod setting to stop skipping staff)", message.author, cat)
+            log.info("%s flagged for %s but skipped: they're staff (change staff exemption in /dashboard)", message.author, cat)
             return None
         return cat
 
@@ -1016,7 +949,7 @@ class Mod:
             name="mod",
             description="how yuki handles this server's rules and staff",
             guild_only=True,
-            default_permissions=None,  # visible to everyone, the real check is can_manage (so people the staff added can see it)
+            default_permissions=None,
         )
 
         def allowed(i: discord.Interaction) -> bool:
@@ -1024,15 +957,9 @@ class Mod:
 
         async def deny(i: discord.Interaction):
             await i.response.send_message(
-                "you don't have access to the mod commands here. ask the server owner or an admin to add you (`/mod access`).",
+                "you don't have access to the mod commands here. ask the server owner or an admin to grant access in `/dashboard`.",
                 ephemeral=True,
             )
-
-        def is_admin(i: discord.Interaction) -> bool:
-            return mod.can_admin(i)
-
-        async def deny_admin(i: discord.Interaction):
-            await i.response.send_message("only the server owner or an Administrator can change that.", ephemeral=True)
 
         @group.command(name="status", description="what yuki knows about this server's rules and staff")
         async def status(i: discord.Interaction):
@@ -1045,24 +972,29 @@ class Mod:
             enforced = mod.enforced(g.id)
             ping_text, _, _ = mod.staff_ping(g)
             roles = mod.mem.fast_get(g.id, "roles") or []
+            skipped = mod.skipped_entries(g.id)
+            exempt_channels = mod.exempt_channels(g.id)
+            access = mod.access(g.id)
+            words = mod.words(g.id)
             lines = [
                 f"**moderation:** {'on' if st['enabled'] else 'off'} (staff exempt: {'yes' if st['exempt_staff'] else 'no'}, "
                 f"slurs always checked: {'yes' if st['slur_fallback'] else 'no'}, bullying always checked: {'yes' if st['harass_fallback'] else 'no'})",
-                f"**emoji reactions:** {'on' if st['reactions'] else 'off'} (`/mod setting`)",
+                f"**emoji reactions:** {'on' if st['reactions'] else 'off'} (settings: `/dashboard`)",
                 f"**rules:** {len(rules)} read" + (f" from #{meta['channel']}" if meta.get("channel") else " (no rules channel found)"),
                 "**auto-checked:** " + (", ".join(f"{c} (rule {r['n']})" for c, r in enforced.items()) or "nothing"),
                 f"**staff ping:** {ping_text or 'nobody pingable'}",
                 f"**roles:** {sum(1 for r in roles if r['tier'] in ('admin', 'mod'))} staff, {sum(1 for r in roles if r['tier'] == 'high')} high",
                 f"**notes:** {len(mod.mem.fast_get(g.id, 'notes') or [])}",
-                *([f"**skipped rules:** {sum(1 for r in rules if mod._is_skipped(r, mod.skipped_entries(g.id)))} (`/mod skiprules`)"]
-                  if mod.skipped_entries(g.id) else []),
-                *([f"**unmoderated channels:** {', '.join(f'<#{c}>' for c in mod.exempt_channels(g.id))} (`/mod channels`)"]
-                  if mod.exempt_channels(g.id) else []),
-                f"**who can use /mod:** {ACCESS_LEVELS[mod.access(g.id)['level']]}"
-                + (f", plus {len(mod.access(g.id)['roles'])} role(s) and {len(mod.access(g.id)['users'])} user(s) you added" if mod.access(g.id)["roles"] or mod.access(g.id)["users"] else ""),
-                f"**swear filter:** {'only your blocked words' if mod.words(g.id)['mode'] == 'custom' else 'built-in list'}"
-                f", {len(mod.words(g.id)['allow'])} allowed exception(s), {len(mod.words(g.id)['block'])} blocked word(s)"
-                + (f", {len(mod.words(g.id)['slur_allow'])} allowed low-level slur(s)" if mod.words(g.id)["slur_allow"] else ""),
+                *([f"**skipped rules:** {sum(1 for r in rules if mod._is_skipped(r, skipped))} (settings: `/dashboard`)"] if skipped else []),
+                *([f"**unmoderated channels:** {', '.join(f'<#{c}>' for c in exempt_channels)} (settings: `/dashboard`)"]
+                  if exempt_channels else []),
+                f"**who can use /mod:** {ACCESS_LEVELS[access['level']]}"
+                + (f", plus {len(access['roles'])} role(s) and {len(access['users'])} user(s) you added"
+                   if access['roles'] or access['users'] else ""),
+                f"**swear filter:** {'only your blocked words' if words['mode'] == 'custom' else 'built-in list'}"
+                f", {len(words['allow'])} allowed exception(s), {len(words['block'])} blocked word(s)"
+                + (f", {len(words['slur_allow'])} allowed low-level slur(s)" if words['slur_allow'] else ""),
+                "manage moderation, access, channel, and word settings in `/dashboard`.",
             ]
             if not rules:
                 lines.append("**heads up:** i haven't read any rules (rules channel not found, or not visible to @everyone). "
@@ -1082,61 +1014,13 @@ class Mod:
                 return await deny(i)
             await i.response.defer(ephemeral=True)
             try:
-                a = await mod.refresh_roles(i.guild)
-                b = await mod.refresh_rules(i.guild, force=True)
+                await mod.refresh_roles(i.guild)
+                await mod.refresh_rules(i.guild, force=True)
             except Exception as e:
                 log.exception("manual refresh failed")
                 return await i.followup.send(f"that broke ({type(e).__name__})", ephemeral=True)
             mod._next_rules[i.guild.id] = time.time() + random.uniform(4, 10) * 3600
-            await i.followup.send(f"{b}\n{a}"[:1900], ephemeral=True)
-
-        @group.command(name="staffrole", description="pick which role yuki pings when someone breaks a rule")
-        @app_commands.describe(role="the role to ping (leave empty to go back to automatic)")
-        async def staffrole(i: discord.Interaction, role: discord.Role | None = None):
-            if not allowed(i):
-                return await deny(i)
-            if role is None:
-                await mod.run(mod.mem.fast_delete, i.guild.id, "staff_role_override")
-                return await i.response.send_message("back to picking the staff role automatically.", ephemeral=True)
-            await mod.run(mod.mem.fast_set, i.guild.id, "staff_role_override", role.id)
-            extra = "" if role.mentionable or i.guild.me.guild_permissions.mention_everyone else (
-                " heads up: that role isn't mentionable and i don't have Mention Everyone, so the ping won't notify anyone. "
-                "turn on 'allow anyone to @mention this role' for it."
-            )
-            await i.response.send_message(f"ok, i'll ping {role.mention} when rules get broken.{extra}", ephemeral=True,
-                                          allowed_mentions=discord.AllowedMentions.none())
-
-        @group.command(name="setting", description="turn parts of yuki's moderation, or his emoji reactions, on or off")
-        @app_commands.describe(name="what to change", value="on or off")
-        @app_commands.choices(
-            name=[
-                app_commands.Choice(name="auto moderation (enabled)", value="enabled"),
-                app_commands.Choice(name="skip staff members (exempt_staff)", value="exempt_staff"),
-                app_commands.Choice(name="always check slurs even with no matching rule (slur_fallback)", value="slur_fallback"),
-                app_commands.Choice(name="always check bullying/insults even with no matching rule (harass_fallback)", value="harass_fallback"),
-                app_commands.Choice(name="still flag allowed slurs when aimed at a person (directed_slurs)", value="directed_slurs"),
-                app_commands.Choice(name="random emoji reactions to messages (reactions)", value="reactions"),
-            ],
-            value=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")],
-        )
-        async def setting(i: discord.Interaction, name: app_commands.Choice[str], value: app_commands.Choice[str]):
-            if not allowed(i):
-                return await deny(i)
-            st = dict(mod.settings(i.guild.id))
-            st[name.value] = value.value == "on"
-            await mod.run(mod.mem.fast_set, i.guild.id, "settings", st)
-            await i.response.send_message(f"{name.value} is now {value.value}.", ephemeral=True)
-
-        @group.command(name="skiprules", description="pick which of the server's rules yuki should NOT enforce")
-        async def skiprules(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            rules = mod.rules(i.guild.id)
-            if not rules:
-                return await i.response.send_message(
-                    "i haven't read any rules yet. run `/mod refresh` first (or the rules channel isn't visible to @everyone).", ephemeral=True)
-            view = SkipRulesView(mod, i.user.id, i.guild.id, rules, mod.skipped_entries(i.guild.id))
-            await i.response.send_message(view.summary(), view=view, ephemeral=True)
+            await i.followup.send("refresh complete. rules and staff roles were re-read.", ephemeral=True)
 
         @group.command(name="test", description="see what yuki would do if a regular member posted this text (nothing is sent)")
         @app_commands.describe(text="the message to check", aimed_at_someone="pretend it mentions or replies to another member")
@@ -1152,7 +1036,7 @@ class Mod:
             elif has_slur(text):  # only an allowed word is in there
                 if st["directed_slurs"] and (aimed_at_someone or _SECOND_PERSON.search(_fold(text))):
                     found.append("slur")
-                    notes["slur"] = "an allowed word, but flagged because it's aimed at someone (`/mod setting` directed_slurs)"
+                    notes["slur"] = "an allowed word, but flagged because it's aimed at someone (configure this in `/dashboard`)"
                 else:
                     exempt_note = "**allowed:** that only has a low-level slur you allowed, so it wouldn't be flagged."
             sev_h, why_h = analyze_harassment(text, aimed_at_someone)
@@ -1180,7 +1064,7 @@ class Mod:
                 if not r:
                     sk = mod.skipped_in_category(g.id, c)
                     lines.append(
-                        f"- {c}: NOT enforced: you told me to skip rule {', '.join(map(str, sk))} (`/mod skiprules`)"
+                        f"- {c}: NOT enforced: this rule is excluded in `/dashboard` (rule {', '.join(map(str, sk))})"
                         if sk else f"- {c}: NOT enforced: no rule in this server covers it"
                     )
                     continue
@@ -1193,9 +1077,9 @@ class Mod:
             if exempt_note:
                 lines.append(exempt_note)
             if not st["enabled"]:
-                lines.append("**but** auto moderation is OFF (`/mod setting`).")
+                lines.append("**but** auto moderation is OFF (settings: `/dashboard`).")
             if mod.channel_exempt(i.channel, g.id):
-                lines.append("**but** this channel is on the no-moderation list, so nothing posted here is checked (`/mod channels`).")
+                lines.append("**but** this channel is excluded from moderation (settings: `/dashboard`).")
             if found and st["exempt_staff"] and mod.is_staff(i.user):
                 lines.append("**but** you count as staff and staff are skipped, so a message from you wouldn't trigger it.")
             ping_text, _, _ = mod.staff_ping(g)
@@ -1205,284 +1089,5 @@ class Mod:
             if cp is not None and not cp.send_messages:
                 lines.append("**problem:** i can't send messages in this channel.")
             await i.response.send_message("\n".join(lines)[:1900], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-
-        @group.command(name="note", description="add a fact yuki should always know about this server")
-        @app_commands.describe(text="e.g. 'bot commands go in #bots'")
-        async def note(i: discord.Interaction, text: str):
-            if not allowed(i):
-                return await deny(i)
-            notes = list(mod.mem.fast_get(i.guild.id, "notes") or [])
-            notes.append(re.sub(r"\s+", " ", text).strip()[:200])
-            await mod.run(mod.mem.fast_set, i.guild.id, "notes", notes[-15:])
-            await i.response.send_message("got it, he'll just know that now.", ephemeral=True)
-
-        @group.command(name="clearnotes", description="remove all the notes you added")
-        async def clearnotes(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            await mod.run(mod.mem.fast_delete, i.guild.id, "notes")
-            await i.response.send_message("notes cleared.", ephemeral=True)
-
-        # ---------------------------------------------------------------- channels yuki never moderates
-        chans = app_commands.Group(name="channels", description="channels yuki should never moderate", parent=group)
-
-        async def save_exempt(gid: int, ids: list):
-            if ids:
-                await mod.run(mod.mem.fast_set, gid, "exempt_channels", ids)
-            else:
-                await mod.run(mod.mem.fast_delete, gid, "exempt_channels")
-
-        @chans.command(name="add", description="yuki will not moderate this channel (or every channel in this category) at all")
-        @app_commands.describe(channel="a text, voice, forum or announcement channel, or a whole category")
-        async def channels_add(i: discord.Interaction, channel: discord.abc.GuildChannel):
-            if not allowed(i):
-                return await deny(i)
-            ids = mod.exempt_channels(i.guild.id)
-            if channel.id in ids:
-                return await i.response.send_message(f"{channel.mention} is already on the list.", ephemeral=True)
-            if len(ids) >= MAX_EXEMPT_CHANNELS:
-                return await i.response.send_message(f"that's {MAX_EXEMPT_CHANNELS} already, remove one first.", ephemeral=True)
-            ids.append(channel.id)
-            await save_exempt(i.guild.id, ids)
-            extra = " that covers every channel inside it too." if isinstance(channel, discord.CategoryChannel) else \
-                " threads inside it are left alone too." if isinstance(channel, (discord.TextChannel, discord.ForumChannel)) else ""
-            await i.response.send_message(f"ok, i won't moderate {channel.mention} at all.{extra}", ephemeral=True)
-
-        @chans.command(name="remove", description="moderate this channel (or category) again")
-        @app_commands.describe(channel="the channel or category to put back")
-        async def channels_remove(i: discord.Interaction, channel: discord.abc.GuildChannel):
-            if not allowed(i):
-                return await deny(i)
-            ids = mod.exempt_channels(i.guild.id)
-            if channel.id not in ids:
-                return await i.response.send_message(f"{channel.mention} wasn't on the list.", ephemeral=True)
-            ids.remove(channel.id)
-            await save_exempt(i.guild.id, ids)
-            await i.response.send_message(f"ok, {channel.mention} is moderated again.", ephemeral=True)
-
-        @chans.command(name="list", description="see the channels yuki never moderates")
-        async def channels_list(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            ids = mod.exempt_channels(i.guild.id)
-            if not ids:
-                return await i.response.send_message("no exceptions: i moderate every channel i can see.", ephemeral=True)
-            await i.response.send_message("**not moderated:** " + ", ".join(f"<#{c}>" for c in ids), ephemeral=True,
-                                          allowed_mentions=discord.AllowedMentions.none())
-
-        @chans.command(name="clear", description="moderate every channel again")
-        async def channels_clear(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            await save_exempt(i.guild.id, [])
-            await i.response.send_message("list cleared. i moderate every channel again.", ephemeral=True)
-
-        # ---------------------------------------------------------------- who can use these commands
-        access = app_commands.Group(name="access", description="who is allowed to use yuki's mod commands", parent=group)
-
-        async def save_access(gid: int, acc: dict):
-            if acc["level"] == "manage_server" and not acc["roles"] and not acc["users"]:
-                await mod.run(mod.mem.fast_delete, gid, "access")
-            else:
-                await mod.run(mod.mem.fast_set, gid, "access", acc)
-
-        @access.command(name="show", description="see who can use the mod commands")
-        async def access_show(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            acc = mod.access(i.guild.id)
-            lines = [
-                f"**base level:** {ACCESS_LEVELS[acc['level']]} (the server owner can always use them)",
-                "**extra roles:** " + (", ".join(f"<@&{r}>" for r in acc["roles"]) or "none"),
-                "**extra people:** " + (", ".join(f"<@{u}>" for u in acc["users"]) or "none"),
-                "only the owner or an Administrator can change this list.",
-            ]
-            await i.response.send_message("\n".join(lines), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-
-        @access.command(name="level", description="how high a permission people need for the mod commands")
-        @app_commands.describe(level="the minimum permission (people you add by role or user still get in)")
-        @app_commands.choices(level=[app_commands.Choice(name=v, value=k) for k, v in ACCESS_LEVELS.items()])
-        async def access_level(i: discord.Interaction, level: app_commands.Choice[str]):
-            if not is_admin(i):
-                return await deny_admin(i)
-            acc = mod.access(i.guild.id)
-            acc["level"] = level.value
-            await save_access(i.guild.id, acc)
-            await i.response.send_message(f"mod commands: {ACCESS_LEVELS[level.value]} from now on.", ephemeral=True)
-
-        @access.command(name="allow_role", description="let everyone with a role use the mod commands")
-        async def access_allow_role(i: discord.Interaction, role: discord.Role):
-            if not is_admin(i):
-                return await deny_admin(i)
-            if role.is_default():
-                return await i.response.send_message("that would be everybody. pick a real role.", ephemeral=True)
-            acc = mod.access(i.guild.id)
-            if role.id not in acc["roles"]:
-                if len(acc["roles"]) >= MAX_ACCESS:
-                    return await i.response.send_message(f"that's {MAX_ACCESS} roles already, remove one first.", ephemeral=True)
-                acc["roles"].append(role.id)
-                await save_access(i.guild.id, acc)
-            await i.response.send_message(f"people with {role.mention} can use the mod commands now.", ephemeral=True,
-                                          allowed_mentions=discord.AllowedMentions.none())
-
-        @access.command(name="remove_role", description="take the mod commands away from a role you added")
-        async def access_remove_role(i: discord.Interaction, role: discord.Role):
-            if not is_admin(i):
-                return await deny_admin(i)
-            acc = mod.access(i.guild.id)
-            if role.id in acc["roles"]:
-                acc["roles"].remove(role.id)
-                await save_access(i.guild.id, acc)
-            await i.response.send_message(f"{role.mention} isn't on the list anymore.", ephemeral=True,
-                                          allowed_mentions=discord.AllowedMentions.none())
-
-        @access.command(name="allow_user", description="let one person use the mod commands")
-        async def access_allow_user(i: discord.Interaction, user: discord.Member):
-            if not is_admin(i):
-                return await deny_admin(i)
-            if user.bot:
-                return await i.response.send_message("bots don't need access.", ephemeral=True)
-            acc = mod.access(i.guild.id)
-            if user.id not in acc["users"]:
-                if len(acc["users"]) >= MAX_ACCESS:
-                    return await i.response.send_message(f"that's {MAX_ACCESS} people already, remove someone first.", ephemeral=True)
-                acc["users"].append(user.id)
-                await save_access(i.guild.id, acc)
-            await i.response.send_message(f"{user.mention} can use the mod commands now.", ephemeral=True,
-                                          allowed_mentions=discord.AllowedMentions.none())
-
-        @access.command(name="remove_user", description="take the mod commands away from a person you added")
-        async def access_remove_user(i: discord.Interaction, user: discord.Member):
-            if not is_admin(i):
-                return await deny_admin(i)
-            acc = mod.access(i.guild.id)
-            if user.id in acc["users"]:
-                acc["users"].remove(user.id)
-                await save_access(i.guild.id, acc)
-            await i.response.send_message(f"{user.mention} isn't on the list anymore.", ephemeral=True,
-                                          allowed_mentions=discord.AllowedMentions.none())
-
-        # ---------------------------------------------------------------- word exceptions / custom blocked words
-        words = app_commands.Group(name="words", description="exceptions and extra blocked words for the swear filter", parent=group)
-
-        async def save_words(gid: int, w: dict):
-            if not w["allow"] and not w["block"] and not w["slur_allow"] and w["mode"] == "default":
-                await mod.run(mod.mem.fast_delete, gid, "words")
-            else:
-                await mod.run(mod.mem.fast_set, gid, "words", w)
-
-        @words.command(name="allow", description="make an exception: this word is fine even though swearing is against the rules")
-        @app_commands.describe(word="the word to allow (it still has to be a swear the built-in list would catch)")
-        async def words_allow(i: discord.Interaction, word: str):
-            if not allowed(i):
-                return await deny(i)
-            w = clean_word(word)
-            if not w:
-                return await i.response.send_message("that doesn't look like a word i can use (letters and numbers, 2 to 32 characters).", ephemeral=True)
-            if has_slur(w):
-                hint = (" this one is on the low-level list though: an admin can use `/mod words allow_slur`."
-                        if w in LOW_LEVEL_SLURS else "")
-                return await i.response.send_message(f"that's a slur, so it can't go through the normal exceptions.{hint}", ephemeral=True)
-            data = mod.words(i.guild.id)
-            if w in data["block"]:
-                data["block"].remove(w)
-            elif not has_strong_swear(w) and not mod._profane(i.guild.id, w):
-                return await i.response.send_message(f"fyi `{w}` isn't on my built-in swear list, so it was never blocked. nothing to allow.", ephemeral=True)
-            if w not in data["allow"]:
-                if len(data["allow"]) >= MAX_WORDS:
-                    return await i.response.send_message(f"that's {MAX_WORDS} exceptions already, remove one first.", ephemeral=True)
-                data["allow"].append(w)
-            await save_words(i.guild.id, data)
-            await i.response.send_message(
-                f"ok, `{w}` is allowed now. exceptions only loosen the swear filter, so insults aimed at people and slurs are still checked.",
-                ephemeral=True)
-
-        @words.command(name="allow_slur", description="allow a low-level slur in this server (admins only, pick from the list)")
-        @app_commands.describe(word="only the low-severity ones can be allowed. the n-word and other racial slurs never can")
-        @app_commands.choices(word=[app_commands.Choice(name=w, value=w) for w in LOW_LEVEL_SLURS])
-        async def words_allow_slur(i: discord.Interaction, word: app_commands.Choice[str]):
-            if not is_admin(i):
-                return await deny_admin(i)
-            data = mod.words(i.guild.id)
-            if word.value not in data["slur_allow"]:
-                data["slur_allow"].append(word.value)
-            await save_words(i.guild.id, data)
-            tail = (" i'll still flag it when it's aimed at someone (turn that off in `/mod setting`: directed_slurs)."
-                    if mod.settings(i.guild.id)["directed_slurs"] else " it's off completely now, even when aimed at someone.")
-            await i.response.send_message(f"ok, `{word.value}` is allowed in this server.{tail}", ephemeral=True)
-
-        @words.command(name="block", description="block a specific word (works even if no rule mentions swearing)")
-        @app_commands.describe(word="the word to block")
-        async def words_block(i: discord.Interaction, word: str):
-            if not allowed(i):
-                return await deny(i)
-            w = clean_word(word)
-            if not w:
-                return await i.response.send_message("that doesn't look like a word i can use (letters and numbers, 2 to 32 characters).", ephemeral=True)
-            data = mod.words(i.guild.id)
-            if w in data["allow"]:
-                data["allow"].remove(w)
-            if w not in data["block"]:
-                if len(data["block"]) >= MAX_WORDS:
-                    return await i.response.send_message(f"that's {MAX_WORDS} blocked words already, remove one first.", ephemeral=True)
-                data["block"].append(w)
-            await save_words(i.guild.id, data)
-            tail = (" the built-in swear list still applies too. to block ONLY your own words use `/mod words mode`."
-                    if data["mode"] == "default" else "")
-            await i.response.send_message(f"ok, `{w}` is blocked now.{tail}", ephemeral=True)
-
-        @words.command(name="remove", description="remove a word from the allowed or blocked list")
-        async def words_remove(i: discord.Interaction, word: str):
-            if not allowed(i):
-                return await deny(i)
-            w = clean_word(word)
-            data = mod.words(i.guild.id)
-            if not w or (w not in data["allow"] and w not in data["block"] and w not in data["slur_allow"]):
-                return await i.response.send_message("that word isn't on either list.", ephemeral=True)
-            for k in ("allow", "block", "slur_allow"):
-                if w in data[k]:
-                    data[k].remove(w)
-            await save_words(i.guild.id, data)
-            await i.response.send_message(f"`{w}` is off the lists.", ephemeral=True)
-
-        @words.command(name="mode", description="use the built-in swear list, or block ONLY the words you chose")
-        @app_commands.choices(mode=[
-            app_commands.Choice(name="built-in swear list plus my blocked words", value="default"),
-            app_commands.Choice(name="only my blocked words", value="custom"),
-        ])
-        async def words_mode(i: discord.Interaction, mode: app_commands.Choice[str]):
-            if not allowed(i):
-                return await deny(i)
-            data = mod.words(i.guild.id)
-            data["mode"] = mode.value
-            await save_words(i.guild.id, data)
-            if mode.value == "custom":
-                msg = "ok, i'll only flag the words you blocked (`/mod words block`)."
-                if not data["block"]:
-                    msg += " you haven't blocked any yet, so nothing gets flagged for swearing right now."
-            else:
-                msg = "back to the built-in swear list, plus any words you blocked."
-            await i.response.send_message(msg, ephemeral=True)
-
-        @words.command(name="list", description="see the allowed and blocked words")
-        async def words_list(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            data = mod.words(i.guild.id)
-            lines = [
-                f"**mode:** {'only your blocked words' if data['mode'] == 'custom' else 'built-in swear list plus your blocked words'}",
-                "**allowed (exceptions):** " + (", ".join(data["allow"]) or "none"),
-                "**blocked:** " + (", ".join(data["block"]) or "none"),
-                "**allowed low-level slurs:** " + (", ".join(data["slur_allow"]) or "none"),
-                "word exceptions only loosen the swear list. other slurs stay blocked, and bullying is still checked.",
-            ]
-            await i.response.send_message("\n".join(lines)[:1900], ephemeral=True)
-
-        @words.command(name="clear", description="wipe both word lists and go back to the built-in swear list")
-        async def words_clear(i: discord.Interaction):
-            if not allowed(i):
-                return await deny(i)
-            await mod.run(mod.mem.fast_delete, i.guild.id, "words")
-            await i.response.send_message("word lists cleared.", ephemeral=True)
 
         return group

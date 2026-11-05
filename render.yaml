@@ -13,6 +13,12 @@ services:
         value: "1"
       - key: DISCORD_TOKEN
         sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_REDIRECT_URI
+        sync: false
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_API_KEYS
