@@ -248,8 +248,8 @@ def _sections(context, guild, member, manage, admin):
             _field("slang_forget_other", "Forget another asked word", "Enter an already asked word to let Yuki ask again; this also removes its definition if present.", "text", ""),
         ]})
     elif admin:
-        # /mod words allow_slur and /mod access use can_admin independently of
-        # can_manage, so an administrator at owner-only level still has these.
+        # Low-level slur exceptions and access policy remain administrator-only,
+        # even when the dashboard user has delegated moderation access.
         sections.append({"id": "words", "title": "Word filters", "description": "Administrator-only exceptions.", "fields": [_slur_field(mod.words(gid))]})
     if admin:
         access = mod.access(gid)
@@ -530,7 +530,8 @@ async def update_settings(context, guild, member, changes, expected=None, reauth
                     raise ValueError(f"{key}: Yuki has not learned or asked about that word.")
                 learned.pop(term, None)
                 writes["slang_skipped"] = [s for s in skipped if s != term]
-        # /mod words allow/block moves an added word out of the other list.
+        # Moving a word into one list removes it from the opposite list unless
+        # both lists were explicitly edited in the same dashboard save.
         if "words" in writes:
             data = writes["words"]
             if "words_allow" in changes and "words_block" not in changes:

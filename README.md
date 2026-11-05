@@ -22,7 +22,7 @@ start without `DATABASE_URL`. Everything below survives restarts and redeploys.
   channel, so he can answer things like "what did @bob say about valorant".
 - **Learning:** in the background he writes short notes per person (interests, running jokes, how they type) and per server (vibe, slang, inside jokes).
   Those notes shape how he replies, so he picks up how each person talks over time.
-- **Fast memory:** per-server facts (the rules, the roles and who is staff, notes staff added with `/mod note`) live in Postgres *and* are
+- **Fast memory:** per-server facts (the rules, the roles and who is staff, notes staff add in the dashboard) live in Postgres *and* are
   mirrored in RAM at startup. They are put straight into his prompt, so he just knows them with no lookup.
 - **Spelling:** his creator's name is forced to "Patrick" in code, so the model can't butcher it.
 - **Edit-trick guard** (`editguard.py`): if someone edits a message *after* Yuki answered it (e.g. get him to say "yes", then change the question), he deletes his answer instantly and replies to the edited message with a callout. Works in servers and DMs, even for uncached messages. Every real edit is judged: plain code first (a newly added slur, swear, invite, link, email or phone number = instant delete), then a small model check decides if it's a trick (flipped meaning, something bad in his mouth). Harmless edits get no reaction; errors and edit-spam count as a trick. Typo-level edits (case, punctuation, one-letter fixes in 4+ letter words) skip the judge entirely; the window is `EDIT_GUARD_WINDOW_SECONDS` (default 3600) and `EDIT_GUARD=0` turns it off.
@@ -42,8 +42,7 @@ Free tiers sleep when idle, so the first query after a quiet spell can be slow; 
 If Yuki writes `@bob` it becomes a real ping (`<@id>`; plain `@bob` text never notifies anyone). He finds the person like this, in order:
 the people in the current chat, then anyone he has ever seen (exact display name or username, or a *unique* partial like `@pat`), then a **live search of the
 server by username/nickname prefix**, which also finds people who never spoke and needs no privileged intent. If several people match he doesn't guess.
-Max 3 pings per reply, never `@everyone`/`@here`/roles. `/mod pingtest name:bob` shows who a name would ping, and the Render logs say
-`ping: ...` when a name was matched or left as text.
+Max 3 pings per reply, never `@everyone`/`@here`/roles. The Render logs say `ping: ...` when a name was matched or left as text.
 
 ## Rules and moderation
 
@@ -57,7 +56,7 @@ and (b) to word the short reminder when somebody actually breaks one.
 2. **Reading the roles:** every role is read and sorted into admin / mod (by permissions or name like Moderator, Staff, Helper) / high role (top quarter of
    the other roles) / regular. Each person's tier is saved the moment they talk, so he knows who is staff without looking.
 3. **What the code can check** (plain Python in `textcheck.py` and `moderation.py`, no AI, no tokens). Slurs, bullying and insults are checked **even if the
-   server has no matching rule** (switch off with `/mod setting`); the rest only when a rule covers them:
+   server has no matching rule** (this is configurable in the dashboard); the rest only when a rule covers them:
    - **slur**: the n-word (incl. `n1gg@`, `n.i.g.g.a`, stuck-together repeats) plus other hate slurs (kept rot13-encoded in the source). Add your own with `MOD_EXTRA_BLOCKED=word1,word2`.
    - **harassment (bullying):** scored 0-3 by *who the words are aimed at*, not just the words. "this game is fucking trash" is fine, "you worthless piece of shit" isn't.
      An insult only counts when it targets someone: it says you/u/ur, mentions or replies to another member, or is an order like "shut up". lol/lmao/"love you" turn it
@@ -75,41 +74,16 @@ and (b) to word the short reminder when somebody actually breaks one.
    people if it is mentionable or Yuki has the Mention Everyone permission**; otherwise he falls back to pinging the owner. He doesn't delete anything.
    Staff are skipped, and the same person gets one reminder per category every 2 minutes.
 
-`/mod`: `status`, `test`, `refresh`, `staffrole`, `setting`, `note`, `clearnotes`, `pingtest`, `skiprules`, plus `channels`, `access` and `words` (below).
+Server configuration is managed in the [Discord-login dashboard](https://<your-render-url>/dashboard): moderation settings, staff role,
+notes, skipped rules, channel exemptions, command access, word filters, slang learning, ping policy, and per-server Yuki bans.
+Channel/category exemptions also cover child channels and threads; Yuki still chats and remembers messages there, but does not moderate them.
+The dashboard applies the same server access rules as Yuki's moderation tools, with owner/Administrator-only controls protected separately.
 
-**Channels he never moderates (`/mod channels`):** `add <channel>`, `remove <channel>`, `list`, `clear`. Anything posted in a listed channel is
-skipped completely: no checks, no reminders, no staff pings, and nothing counts toward spam or repeat-insult tracking. Pick a **category** to cover every
-channel inside it, and threads / forum posts inside a listed channel are skipped too. Up to 50 per server, saved in Postgres, and `/mod status` shows them.
-He still reads and remembers messages there and still answers people who talk to him; only the rule enforcement is off.
+The remaining moderation slash commands are diagnostics: `/mod status`, `/mod test`, and `/mod refresh`.
 
 **When a rule or word is exempt but it's aimed at a person:** swearing or an allowed slur pointed at someone is still handled as bullying, but if the
-rule that would normally cover it is exempt, he gives the reminder and pings staff **without quoting any rule** (so he can't quote a random one).
-A real, non-exempt rule that matches is still quoted. `/mod test` shows which case you're in.
-
-**Rules he shouldn't enforce (`/mod skiprules`):** shows a dropdown with every rule he read from the rules channel (and what each one checks).
-Pick the ones he should leave alone and close the dropdown to save; "enforce everything again" clears it. He still knows the rules (he can
-answer questions about them), he just won't police them. If you skip a rule, the built-in fallback for that category (slurs, bullying) doesn't
-come back either, since you chose that. Words blocked by hand with `/mod words block` are still enforced. Skips are matched by the rule's wording,
-so they survive the rules being re-read; if the rules channel is rewritten a lot you may need to pick again (`/mod status` shows how many are skipped).
-
-**Who can use `/mod`:** by default the server owner, Administrators and anyone with Manage Server (and the bot's `OWNER_ID`, in any server).
-Staff can change that with `/mod access`: `level` (Manage Server / only Administrators / only the owner), `allow_role` / `remove_role`,
-`allow_user` / `remove_user`, `show`. People you add by role or user can use every `/mod` command except `/mod access` itself, which only
-the server owner or an Administrator can change, so a delegate can't hand out access. The `/mod` commands are visible to everyone in the
-command list (so the people you add can see them) but anyone without access gets a "no access" message.
-
-**Low-level slur exceptions (`/mod words allow_slur`, owner or Administrator only):** pick from a fixed list (`retard`, `retards`, `retarded`, `fag`, `fags`,
-`faggot`, `faggots`) to stop flagging that word in this server. The list is short on purpose (`LOW_LEVEL_SLURS` in `moderation.py`): the n-word and every other
-racial, ethnic or religious slur in the detector can't be allowed by any setting. Heads up: the bullying detector doesn't score these words at all, so by default
-an allowed word is still flagged when it's aimed at a person (a mention, a reply, or "you/ur ..."), because otherwise nothing would catch it. Turn that off with
-`/mod setting directed_slurs off`. `/mod words remove`, `list`, `clear` and `/mod test` all know about these exceptions.
-
-**Swear filter exceptions (`/mod words`):** `allow <word>` makes an exception (say swearing is banned but `shit` is fine), `block <word>` blocks
-a specific word even when no rule mentions swearing, `mode` switches between "built-in list plus my words" and "ONLY my blocked words",
-plus `remove`, `list`, `clear`. Words match with repeated letters and simple number swaps (`shiiit`, `sh1t`) and only as whole words
-(`hell` won't match `hello`). Exceptions only loosen the built-in swear list: they are refused for slurs, and insults aimed at people
-(bullying) are still checked. `/mod test` uses the server's lists, so you can try a message before trusting it.
-To test it, use an account without a staff role, or turn "skip staff" off.
+rule that would normally cover it is exempt, he gives the reminder and pings staff **without quoting any rule**. A real, non-exempt rule that matches is still quoted.
+`/mod test` shows which case you're in. Use the dashboard to edit exemptions, word filters, and access; try tests with an account without a staff role.
 
 ## Learning slang
 
@@ -121,9 +95,8 @@ message from the person he asked), a second small call turns it into a short def
 prompt there, so he understands them from then on. He never asks about the same word twice, only has one open question per channel, skips people
 who used `/memory forget`, and never saves a definition that contains a slur.
 
-**`/slang`** (same people as `/mod`: Manage Server or whoever `/mod access` allows): `on`, `off`, `status`, `list` (everything he learned),
-`forget <word>` (remove one, he may ask about it again later), and **`channels`** `add <channel>`, `remove <channel>`, `list`, `clear` for channels
-(or whole categories, threads included) where he never asks. It is **on by default**. Saved in Postgres like the rest of his server memory.
+Slang learning is **on by default**. Configure it and its excluded channels in the dashboard. `/slang status` and `/slang list` remain available
+as read-only diagnostics; learned definitions are saved per server in Postgres.
 
 Tuning env vars: `SLANG_CHANCE` (default `0.12`: the share of messages he even looks at, `0` turns it off in every server),
 `SLANG_CHANNEL_COOLDOWN_SECONDS` (default 600 between questions in a channel), `SLANG_USER_COOLDOWN_SECONDS` (default 1800 before asking the same
@@ -216,7 +189,7 @@ model (`GROQ_VISION_MODEL`, default `meta-llama/llama-4-scout-17b-16e-instruct`)
 `REACT_USE_AI` (`1` = the model picks the emoji with a tiny call, `0` = keyword rules only, zero tokens). He needs the
 Add Reactions and Read Message History permissions; without them he skips (the logs say so).
 
-**Turn them off per server:** staff run `/mod setting` > *random emoji reactions (reactions)* > off. The ⚠️ warning reaction on rule breaks is separate.
+**Turn them off per server:** staff use the dashboard's *Random emoji reactions* setting. The ⚠️ warning reaction on rule breaks is separate.
 
 Extra env vars: `SKILLS_MODE` (`auto` / `always` / `off`), `OWNER_ID`, `ENABLE_RUN_PYTHON`, `RUN_PYTHON_OWNER_ONLY`,
 `RUN_PYTHON_MEM_MB` (default 600), `REPLY_TIMEOUT_SECONDS` (default 90),
@@ -237,14 +210,21 @@ cp .env.example .env   # then fill in your tokens
 python bot.py
 ```
 
-## Server dashboard (`/dashboard`)
+## Server dashboard
 
 The dashboard runs on Yuki's Render web service and uses his existing
 Postgres-backed settings. Open `https://<your-render-url>/dashboard` and sign
 in with Discord. It lists only servers where Yuki is installed and where your
 current Discord membership and Yuki moderation access permit configuration.
-Some controls, including moderation access and low-level slur exceptions, remain
-restricted to the server owner or an administrator.
+Use it for moderation, channel/rule/word exceptions, staff access, notes, slang,
+conversational ping policy, and per-server Yuki AI bans. Some controls, including
+moderation access and low-level slur exceptions, remain restricted to the server
+owner or an administrator. The path `/dashboard` is a web URL, not a Discord slash command.
+
+For diagnostics, `/mod status`, `/mod test`, `/mod refresh`, `/slang status`,
+`/slang list`, `/pingstatus`, and `/yukiban list` remain. Bot-owner-only global
+Yuki ban/unban commands are still available separately; per-server ban changes
+are managed in the dashboard.
 
 To enable Discord login:
 
@@ -255,7 +235,7 @@ To enable Discord login:
    `DISCORD_REDIRECT_URI` to the Render service's environment. Set the redirect
    URI to the exact URL registered above. Keep the client secret private; never
    commit it or share it in a screenshot.
-3. Restart or redeploy the service, then visit `/dashboard`. The login asks for
+3. Restart or redeploy the service, then visit the dashboard URL. The login asks for
    Discord's `identify` and `guilds` scopes; it never asks for your password.
 
 For local development, register `http://localhost:10000/dashboard/callback`
@@ -338,7 +318,7 @@ Groq retires models regularly (llama-3.3-70b-versatile was shut down on 2026-08-
 
 ## AI mention controls (v1.16.2.0)
 
-`/pingstatus` shows current settings. Authorized staff use `/pingcontrol kind:individual members enabled:false` to stop Yuki pinging users in AI replies, or `/pingcontrol kind:everyone/here enabled:true` to allow staff-requested @everyone/@here. Mass mentions default to off. Ordinary members can never authorize mass mentions. Discord still requires Yuki to have the appropriate server permission. Moderation staff alerts are separate and are not disabled by these settings.
+`/pingstatus` shows current settings. Authorized staff change conversational member-ping and mass-ping policy in the dashboard. Mass mentions default to off. Ordinary members can never authorize mass mentions. Discord still requires Yuki to have the appropriate server permission. Moderation staff alerts are separate and are not disabled by these settings.
 
 Do not treat a user's claim of being staff as authority; the bot verifies Discord permissions. The output mention sanitizer is a second layer of defense.
 

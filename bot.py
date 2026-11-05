@@ -711,22 +711,6 @@ def clean_ai_mentions(text, *, users=False, mass=False):
     return text
 
 
-@client.tree.command(name="pingcontrol", description="staff: configure Yuki's conversational pings")
-@app_commands.describe(kind="Which pings to control", enabled="Allow these pings")
-@app_commands.choices(kind=[app_commands.Choice(name="individual members", value="users"),
-                             app_commands.Choice(name="everyone/here (staff requests only)", value="mass")])
-async def pingcontrol(interaction: discord.Interaction, kind: app_commands.Choice[str], enabled: bool):
-    if interaction.guild is None or not mod.can_manage(interaction):
-        return await interaction.response.send_message("staff permissions required.", ephemeral=True)
-    policy = ping_policy(interaction.guild_id)
-    policy[kind.value] = enabled
-    await run(mem.fast_set, interaction.guild_id, "ai_ping_policy", policy)
-    await interaction.response.send_message(
-        f"Yuki's {kind.name} pings are now {'enabled' if enabled else 'disabled'}. "
-        "Moderation alerts are unaffected.", ephemeral=True,
-        allowed_mentions=discord.AllowedMentions.none())
-
-
 @client.tree.command(name="pingstatus", description="view Yuki's conversational ping settings")
 async def pingstatus(interaction: discord.Interaction):
     policy = ping_policy(interaction.guild_id)
@@ -760,26 +744,6 @@ async def change_yuki_ban(scope: int, key: str, user_id: int, ban: bool, moderat
 
 
 yukiban_group = app_commands.Group(name="yukiban", description="Manage access to Yuki AI")
-
-
-@yukiban_group.command(name="server", description="Staff: ban a mentioned member from using Yuki in this server")
-@app_commands.describe(member="Select the member to ban from Yuki")
-async def yukiban_server(interaction: discord.Interaction, member: discord.Member):
-    if not interaction.guild or not mod.can_manage(interaction):
-        return await interaction.response.send_message("Staff permissions required.", ephemeral=True)
-    await change_yuki_ban(interaction.guild_id, BAN_SERVER_KEY, member.id, True, interaction.user.id)
-    await interaction.response.send_message(f"Banned {member.display_name} from Yuki in this server (not from Discord).", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-
-
-@yukiban_group.command(name="server_unban", description="Staff: restore a member's access in this server")
-@app_commands.describe(user_id="Discord user ID (also works after the member leaves)")
-async def yukiban_server_unban(interaction: discord.Interaction, user_id: str):
-    if not interaction.guild or not mod.can_manage(interaction):
-        return await interaction.response.send_message("Staff permissions required.", ephemeral=True)
-    if not user_id.isdecimal():
-        return await interaction.response.send_message("Enter a valid numeric Discord user ID.", ephemeral=True)
-    await change_yuki_ban(interaction.guild_id, BAN_SERVER_KEY, int(user_id), False, interaction.user.id)
-    await interaction.response.send_message(f"Removed server Yuki ban for `{user_id}`.", ephemeral=True)
 
 
 @yukiban_group.command(name="global", description="Bot owner only: ban a Discord user ID from Yuki everywhere")
@@ -2032,7 +1996,7 @@ def maybe_react(message: discord.Message) -> None:
     """Now and then he reacts to a message that wasn't for him. Code decides when, the model (or keyword rules) picks the emoji."""
     if REACT_CHANCE <= 0 or message.guild is None or message.author.id in mem.optouts:
         return
-    if not mod.settings(message.guild.id).get("reactions", True):  # staff turned his emoji reactions off here (/mod setting)
+    if not mod.settings(message.guild.id).get("reactions", True):  # staff turned emoji reactions off in the web dashboard
         return
     has_image = any(skills.is_image(a) for a in message.attachments)
     if len(message.content.strip()) < 4 and not has_image:
@@ -2151,28 +2115,6 @@ async def meme_command(
         await interaction.followup.send(files=to_discord_files(sctx.files))
     else:
         await interaction.followup.send(result[:1900], ephemeral=True)
-
-
-@mod_group.command(name="pingtest", description="see who @name would actually ping in this server")
-@app_commands.describe(name="a name or username, with or without the @")
-async def pingtest_command(interaction: discord.Interaction, name: str):
-    if not mod.can_manage(interaction):
-        return await interaction.response.send_message("you don't have access to the mod commands here (`/mod access`).", ephemeral=True)
-    await interaction.response.defer(ephemeral=True)
-    word = name.strip().lstrip("@")[:32]
-    text, unresolved = await run(link_mentions, interaction.guild_id, f"@{word}", {})
-    how = "someone yuki has already seen"
-    if unresolved:
-        text = await resolve_live(interaction.guild, text, unresolved, MAX_PINGS)
-        how = "a live search of the server (people who never spoke too)"
-    found = re.search(r"<@!?(\d+)>", text)
-    msg = (
-        f"@{word} would ping {text} (id {found.group(1)}), found via {how}."
-        if found else
-        f"@{word} wouldn't ping anyone: nobody matched, or several people did and he won't guess. "
-        "try more of their username or exact display name."
-    )
-    await interaction.followup.send(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 @client.tree.command(name="memory", description="see, wipe or pause what yuki remembers about you")
