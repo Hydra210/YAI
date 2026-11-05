@@ -12,12 +12,16 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.3.0"
-VERSION_DATE = "2026-11-02"
-VERSION_NOTE = "one conversation at a time per server"
+VERSION = "1.18.4.0"
+VERSION_DATE = "2026-11-04"
+VERSION_NOTE = "edit-trick protection"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.4.0", "date": "2026-11-04", "title": "edit-trick protection",
+     "changes": ["if someone gets him to say yes to something harmless and then edits their message into something bad, he now catches it: his answer is deleted right away and he replies to the edited message with a callout. works in servers and DMs.",
+                 "he judges every real edit: plain code checks first (a new slur, swear, invite, link, email or phone number is deleted instantly), then he reads the original, his answer and the edit to decide if it's a trick. harmless edits like typo fixes or added detail get no reaction at all. if the check fails or someone edits the same message too many times, he treats it as a trick.",
+                 "it also works if they edit while he's still thinking or waiting in line: he just doesn't answer. edits count for an hour after he answers, and he only calls out the first trick on a message."]},
     {"version": "1.18.3.0", "date": "2026-11-02", "title": "one conversation at a time per server",
      "changes": ["in a server he now talks to one person at a time. everyone else waits in line (up to 30), and anything past that is dropped. /yuki follows the same line.",
                  "the longer his reply is, the longer his typing bubble stays up (about 30 characters a second, never more than 8 seconds).",
@@ -191,7 +195,7 @@ ABOUT = {
     ),
     "privacy": (
         "privacy: memory is per server and dms are private to each person. tools only read channels the person asking can see. edited messages update and "
-        "deleted ones are removed. `/memory forget` wipes your stuff. rule-break records only keep what and when, not the message text."
+        "deleted ones are removed. if you edit a message after he answered it to change what it says, he deletes his answer and calls it out. `/memory forget` wipes your stuff. rule-break records only keep what and when, not the message text."
     ),
     "limits": (
         "limits: he can be wrong, his image vision is basic, his rule checks are heuristics, "
