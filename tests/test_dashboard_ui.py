@@ -34,3 +34,15 @@ def test_dashboard_dirty_state_uses_plain_text_without_status_dots():
     assert ".nav-dirty" not in css
     assert ".mini-dirty" not in css
     assert ".welcome-tag" not in css
+
+
+def test_dashboard_borders_are_stateful_and_keyboard_focus_remains_visible():
+    css = (ROOT / "web/dashboard.css").read_text()
+
+    assert ".panel { border: 1px solid transparent;" in css
+    assert "border-color: transparent;" in css
+    assert ".nav-item:hover:not(:disabled)" in css and "border-color: #444" in css
+    assert ".nav-item.active" in css and "border-color: #404040" in css
+    assert ".section-card:hover:not(:disabled)" in css and "border-color: #666" in css
+    assert ".text-input:hover:not(:disabled)" in css and ".text-input:focus-visible" in css
+    assert ":focus-visible { outline: 3px solid #fff !important;" in css
