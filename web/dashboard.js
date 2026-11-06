@@ -59,13 +59,16 @@
       node.replaceChildren(image);
     } catch (_) { /* Keep the initial when an image URL is invalid. */ }
   }
-  function copy(value) { return Array.isArray(value) ? value.slice() : value; }
+  function copy(value) {
+    return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+  }
   function readonly(field) { return Boolean(field.read_only || field.disabled); }
   function fields() {
     return state.snapshot && Array.isArray(state.snapshot.sections)
       ? state.snapshot.sections.flatMap((section) => Array.isArray(section.fields) ? section.fields : []) : [];
   }
   function equalValues(a, b, type) {
+    if (type === 'rules_editor') return JSON.stringify(a) === JSON.stringify(b);
     if (type === 'multi_select' && Array.isArray(a) && Array.isArray(b)) {
       return a.length === b.length && a.slice().sort().every((value, i) => value === b.slice().sort()[i]);
     }
@@ -442,13 +445,114 @@
     wrap.append(panel);
     syncDirtyUI();
   }
+  function renderRulesEditor(field, id, disabled, value) {
+    const editor = el('div', 'rules-editor');
+    editor.setAttribute('role', 'group');
+    const rules = Array.isArray(value) ? value : [];
+    if (!rules.length) {
+      const empty = el('div', 'rules-editor-empty');
+      empty.append(el('strong', '', 'No parsed rules yet'), el('p', '', 'When Yuki finds rules in this server, their original wording and editable corrections will appear here.'));
+      editor.append(empty);
+      return editor;
+    }
+
+    const options = Array.isArray(field.options) ? field.options.map((option) => ({
+      value: String(option.value), label: option.label == null ? String(option.value) : String(option.label)
+    })) : [];
+    rules.forEach((rule, index) => {
+      if (!rule || typeof rule !== 'object') return;
+      const card = el('article', 'rule-card');
+      if (rule.stale) card.classList.add('rule-card-stale');
+      const heading = el('div', 'rule-card-heading');
+      const title = el('h3', 'rule-number', `Rule ${rule.n == null ? index + 1 : rule.n}`);
+      heading.append(title);
+      card.append(heading);
+      if (rule.stale) {
+        card.append(el('p', 'rule-stale-note', 'Stale / orphan rule. To remove its saved correction, clear the correction and guidance, choose “auto”, then save.'));
+      }
+
+      const original = el('p', 'rule-original', rule.text == null ? '' : rule.text);
+      original.setAttribute('aria-label', 'Original parsed rule text (read only)');
+      card.append(original);
+
+      const metadata = el('div', 'rule-metadata');
+      const source = el('div', 'rule-meta-item');
+      source.append(el('span', 'rule-meta-label', 'Source channel'), el('span', 'rule-meta-value', rule.source_channel == null || rule.source_channel === '' ? 'Not available' : rule.source_channel));
+      const category = el('div', 'rule-meta-item');
+      category.append(el('span', 'rule-meta-label', 'Parsed category'), el('span', 'rule-meta-value', rule.category == null || rule.category === '' ? 'Not categorized' : rule.category));
+      metadata.append(source, category);
+      card.append(metadata);
+
+      const correctionId = `${id}-rule-${index}-correction`;
+      const correctionLabel = el('label', 'rule-control-label', 'Correction');
+      correctionLabel.htmlFor = correctionId;
+      const correction = el('textarea', 'text-area rule-editor-control');
+      correction.id = correctionId;
+      correction.rows = 3;
+      correction.disabled = disabled;
+      correction.value = rule.correction == null ? '' : String(rule.correction);
+      correction.addEventListener('input', () => updateRule(field, rule.id, 'correction', correction.value));
+      const guidanceId = `${id}-rule-${index}-guidance`;
+      const guidanceLabel = el('label', 'rule-control-label', 'Guidance for Yuki (optional)');
+      guidanceLabel.htmlFor = guidanceId;
+      const guidance = el('textarea', 'text-area rule-editor-control rule-guidance');
+      guidance.id = guidanceId;
+      guidance.rows = 2;
+      guidance.disabled = disabled;
+      guidance.value = rule.guidance == null ? '' : String(rule.guidance);
+      guidance.addEventListener('input', () => updateRule(field, rule.id, 'guidance', guidance.value));
+
+      const categoryId = `${id}-rule-${index}-category-override`;
+      const categoryLabel = el('label', 'rule-control-label', 'Category override');
+      categoryLabel.htmlFor = categoryId;
+      const categorySelect = el('select', 'select-input rule-editor-select');
+      categorySelect.id = categoryId;
+      categorySelect.disabled = disabled;
+      const currentOverride = rule.category_override == null ? 'auto' : String(rule.category_override);
+      let matchedOverride = false;
+      options.forEach((option) => {
+        const optionNode = el('option', '', option.label);
+        optionNode.value = option.value;
+        optionNode.selected = option.value === currentOverride;
+        if (optionNode.selected) matchedOverride = true;
+        categorySelect.append(optionNode);
+      });
+      if (!matchedOverride) {
+        const current = el('option', '', currentOverride || 'auto');
+        current.value = currentOverride;
+        current.selected = true;
+        categorySelect.prepend(current);
+      }
+      categorySelect.addEventListener('change', () => updateRule(field, rule.id, 'category_override', categorySelect.value));
+
+      const controls = el('div', 'rule-controls');
+      const correctionGroup = el('div', 'rule-control-group');
+      correctionGroup.append(correctionLabel, correction);
+      const guidanceGroup = el('div', 'rule-control-group');
+      guidanceGroup.append(guidanceLabel, guidance);
+      const categoryGroup = el('div', 'rule-control-group rule-category-group');
+      categoryGroup.append(categoryLabel, categorySelect);
+      controls.append(correctionGroup, guidanceGroup, categoryGroup);
+      card.append(controls);
+      editor.append(card);
+    });
+    return editor;
+  }
+  function updateRule(field, ruleId, property, nextValue) {
+    if (state.busy || readonly(field) || typeof field.key !== 'string') return;
+    const current = state.drafts.get(field.key);
+    if (!Array.isArray(current)) return;
+    const updated = current.map((rule) => rule && rule.id === ruleId ? { ...rule, [property]: nextValue } : rule);
+    state.drafts.set(field.key, copy(updated));
+    syncDirtyUI();
+  }
   function renderField(field, index) {
     const row = el('div', 'field-row');
     const detail = el('div');
     const id = `setting-${index}`;
     const label = el('label', 'field-label', field.label || field.key || 'Setting');
     label.id = `${id}-label`;
-    label.htmlFor = id;
+    if (field.type !== 'rules_editor') label.htmlFor = id;
     detail.append(label);
     if (field.description) {
       const description = el('p', 'field-description', field.description);
@@ -473,7 +577,13 @@
       if (ids.length) input.setAttribute('aria-describedby', ids.join(' '));
       input.disabled = disabled;
     };
-    if (field.type === 'boolean') {
+    if (field.type === 'rules_editor') {
+      const editor = renderRulesEditor(field, id, disabled, value);
+      editor.id = id;
+      editor.setAttribute('aria-labelledby', label.id);
+      if (field.description) editor.setAttribute('aria-describedby', `${id}-description`);
+      control.append(editor);
+    } else if (field.type === 'boolean') {
       const switchLabel = el('label', 'toggle-label');
       const input = document.createElement('input');
       input.type = 'checkbox';

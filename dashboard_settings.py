@@ -26,6 +26,10 @@ import slang
 MAX_BANS = 10000
 MAX_NOTES = 15
 MAX_NOTE_LENGTH = 200
+MAX_RULE_ANNOTATIONS = 50
+MAX_RULE_EDITOR_ENTRIES = 75  # 25 current rules plus up to 50 unmatched saved annotations
+MAX_RULE_CORRECTION_LENGTH = 500
+MAX_RULE_GUIDANCE_LENGTH = 1000
 _MAX_ID = (1 << 64) - 1
 _LOCKS = {}  # (event loop, memory instance identity, guild id) -> asyncio.Lock
 
@@ -39,8 +43,10 @@ _BOOL_SETTINGS = {
 }
 _ADMIN_KEYS = {"access_level", "access_roles", "access_users", "words_slur_allow"}
 _SECTION_FACTS = {
+    "conversation": {"yuki_talk_channels"},
     "moderation": {"settings", "staff_role_override"},
     "exemptions": {"exempt_channels", "skipped_rules", "rules"},
+    "rules": {"rules", "rules_meta", "rule_annotations"},
     "words": {"words"}, "notes": {"notes"}, "pings": {"ai_ping_policy"},
     "yuki_bans": {"yuki_server_bans"},
     "slang": {"slang_settings", "slang_terms", "slang_skipped"},
@@ -151,6 +157,30 @@ def _channel_options(guild, member, selected=()):
     return out
 
 
+def _conversation_channel_options(guild, member, selected=()):
+    """Only offer text-capable channels and categories, without disclosing hidden names."""
+    visible = {option["value"] for option in _channel_options(guild, member, ())}
+    out, seen = [], set()
+    for channel in getattr(guild, "channels", ()):
+        value = str(getattr(channel, "id", ""))
+        if not value or value not in visible:
+            continue
+        kind = getattr(getattr(channel, "type", None), "name", None)
+        if kind is None:
+            kind = str(getattr(channel, "type", "")).lower().split(".")[-1]
+        category = isinstance(channel, getattr(discord, "CategoryChannel", ())) or kind == "category"
+        if kind and not category and kind not in {"text", "news", "forum"}:
+            continue
+        label = f"{channel.name} (category)" if category else f"#{channel.name}"
+        out.append(_option(value, label))
+        seen.add(value)
+    for value in selected:
+        value = str(value)
+        if value not in seen:
+            out.append(_option(value, "Unavailable channel (" + value + ")"))
+    return out
+
+
 def _rule_token(prefix, entry, occurrence):
     raw = json.dumps([entry.get("n"), entry.get("text", ""), occurrence], ensure_ascii=False, separators=(",", ":"))
     return prefix + ":" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -193,10 +223,92 @@ def _rules_view(mod, gid):
     return options, selected, records
 
 
+def _rule_annotations_view(mod, guild):
+    """Current extracted rules plus unmatched annotations, without trusting client-supplied rule metadata."""
+    gid = guild.id
+    rules = [r for r in mod.rules(gid)[:25]
+             if isinstance(r, dict) and "n" in r and isinstance(r.get("text"), str)
+             and isinstance(r.get("category", "none"), str)]
+    annotations = mod.rule_annotations(gid)
+    meta = _get(mod.mem, gid, "rules_meta", {}) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    source_id = meta.get("channel_id")
+    channel = None
+    try:
+        source_id = int(source_id) if source_id is not None else None
+        getter = getattr(guild, "get_channel", None)
+        channel = getter(source_id) if source_id and callable(getter) else None
+        if channel is None and source_id:
+            channel = next((c for c in getattr(guild, "channels", ()) if getattr(c, "id", None) == source_id), None)
+    except (TypeError, ValueError):
+        source_id = None
+    source_name = (f"#{channel.name}" if channel else
+                   f"#{meta['channel']}" if meta.get("channel") else
+                   f"Unavailable channel ({source_id})" if source_id else "Source channel unavailable")
+    value, matched, seen = [], set(), {}
+    for rule in rules:
+        identity = (str(rule["n"]), rule["text"])
+        occurrence = seen.get(identity, 0)
+        seen[identity] = occurrence + 1
+        token = _rule_token("annotation", rule, occurrence)
+        index = next((i for i, entry in enumerate(annotations)
+                      if i not in matched and mod.rule_annotation_matches(rule, entry)), None)
+        annotation = annotations[index] if index is not None else {}
+        if index is not None:
+            matched.add(index)
+        value.append({
+            "id": token,
+            "n": rule["n"],
+            "text": rule["text"][:200],
+            "category": rule.get("category", "none") if rule.get("category", "none") in moderation.CATEGORIES else "none",
+            "source_channel": source_name,
+            "source_channel_id": source_id,
+            "correction": annotation.get("correction", "")[:500] if isinstance(annotation.get("correction", ""), str) else "",
+            "guidance": annotation.get("guidance", "")[:1000] if isinstance(annotation.get("guidance", ""), str) else "",
+            "category_override": _editor_category(annotation.get("category_override", "auto")),
+            "stale": False,
+        })
+    stale_seen = {}
+    for i, annotation in enumerate(annotations):
+        if i in matched or "n" not in annotation or not isinstance(annotation.get("text"), str):
+            continue
+        identity = (str(annotation["n"]), annotation["text"])
+        occurrence = stale_seen.get(identity, 0)
+        stale_seen[identity] = occurrence + 1
+        token = _rule_token("annotation-saved", annotation, occurrence)
+        source = annotation.get("source_channel") if isinstance(annotation.get("source_channel"), str) else source_name
+        category = annotation.get("source_category", "none")
+        if not isinstance(category, str):
+            category = "none"
+        value.append({
+            "id": token,
+            "n": annotation["n"],
+            "text": annotation["text"][:200],
+            "category": category if category in moderation.CATEGORIES else "none",
+            "source_channel": source,
+            "source_channel_id": annotation.get("source_channel_id", source_id),
+            "correction": annotation.get("correction", "")[:500] if isinstance(annotation.get("correction", ""), str) else "",
+            "guidance": annotation.get("guidance", "")[:1000] if isinstance(annotation.get("guidance", ""), str) else "",
+            "category_override": _editor_category(annotation.get("category_override", "auto")),
+            "stale": True,
+        })
+    return value
+
+
+def _editor_category(value):
+    allowed = {"auto", "none", *moderation.CATEGORIES}
+    return value if isinstance(value, str) and value in allowed else "auto"
+
+
 def _sections(context, guild, member, manage, admin):
     gid, mod, mem = guild.id, context.mod, context.mem
     sections = []
     if manage:
+        talk_channels = _ids(_get(mem, gid, "yuki_talk_channels", []) or [])
+        sections.append({"id": "conversation", "title": "Conversation channels", "description": "Limit where Yuki chats. Moderation and authorized server-management commands stay available everywhere.", "fields": [
+            _field("yuki_talk_channels", "Allowed channels and categories", "Leave empty to allow conversation everywhere. If you select locations, conversational replies—including @mentions, spontaneous chat, and /yuki—are limited to those channels, their threads, and child channels of selected categories.", "multi_select", talk_channels, _conversation_channel_options(guild, member, talk_channels)),
+        ]})
         settings = mod.settings(gid)
         fields = [_field(k, label, description, "boolean", bool(settings[k]))
                   for k, (label, description) in _BOOL_SETTINGS.items()]
@@ -211,6 +323,12 @@ def _sections(context, guild, member, manage, admin):
         sections.append({"id": "exemptions", "title": "Moderation exemptions", "description": "Skip selected channels, categories, or rules.", "fields": [
             _field("exempt_channels", "Excluded channels and categories", "No moderation in these channels or their threads; categories include child channels. Maximum 50.", "multi_select", channels, _channel_options(guild, member, channels)),
             _field("skipped_rules", "Rules not enforced", "Yuki still knows these rules. Previously saved unmatched rules are shown so they can be retained or removed.", "multi_select", chosen, rule_opts),
+        ]})
+        category_options = [_option("auto", "Automatic (Yuki's parsed category)"),
+                            _option("none", "No category (informational)")]
+        category_options.extend(_option(key, key.replace("_", " ").title()) for key in moderation.CATEGORIES)
+        sections.append({"id": "rules", "title": "Server rules", "description": "Review the rules Yuki extracted from the public rules channel and add staff corrections.", "fields": [
+            _field("rule_annotations", "Rule interpretations", "The original wording and source channel are shown for each rule. Corrections change Yuki's interpreted and quoted wording without editing Discord. Category selects the built-in detector; global slur/bullying fallbacks can still apply. Guidance helps word reminders but does not create new detectors.", "rules_editor", _rule_annotations_view(mod, guild), category_options),
         ]})
         w = mod.words(gid)
         fields = [
@@ -383,6 +501,51 @@ def _word_list(raw, field):
     return result
 
 
+def _rule_annotation_writes(value, spec, mod):
+    if not isinstance(value, list) or len(value) > MAX_RULE_EDITOR_ENTRIES:
+        raise ValueError(f"rule_annotations: expected a list of at most {MAX_RULE_EDITOR_ENTRIES} current and saved rules.")
+    records = {entry["id"]: entry for entry in spec["value"] if isinstance(entry, dict) and isinstance(entry.get("id"), str)}
+    categories = {option["value"] for option in spec["options"]}
+    seen, writes = set(), []
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or item["id"] not in records:
+            raise ValueError("rule_annotations: a rule changed or is unavailable; refresh and try again.")
+        token = item["id"]
+        if token in seen:
+            raise ValueError("rule_annotations: duplicate rule entries are not allowed.")
+        seen.add(token)
+        base = records[token]
+        correction = item.get("correction", "")
+        guidance = item.get("guidance", "")
+        category = item.get("category_override", "auto")
+        if not isinstance(correction, str) or "\x00" in correction or len(correction.strip()) > MAX_RULE_CORRECTION_LENGTH:
+            raise ValueError(f"rule_annotations: corrections must be text up to {MAX_RULE_CORRECTION_LENGTH} characters.")
+        if not isinstance(guidance, str) or "\x00" in guidance or len(guidance.strip()) > MAX_RULE_GUIDANCE_LENGTH:
+            raise ValueError(f"rule_annotations: guidance must be text up to {MAX_RULE_GUIDANCE_LENGTH} characters.")
+        if not isinstance(category, str) or category not in categories:
+            raise ValueError("rule_annotations: choose a valid category.")
+        correction, guidance = correction.strip(), guidance.strip()
+        if not correction and not guidance and category == "auto":
+            continue
+        try:
+            source_channel_id = int(base["source_channel_id"]) if base.get("source_channel_id") else None
+        except (TypeError, ValueError):
+            source_channel_id = None
+        writes.append({
+            "n": base["n"],
+            "text": base["text"][:200],
+            "source_category": base.get("category", "none"),
+            "source_channel": str(base.get("source_channel", "Source channel unavailable"))[:100],
+            "source_channel_id": source_channel_id,
+            "correction": correction,
+            "guidance": guidance,
+            "category_override": category,
+        })
+        if len(writes) > MAX_RULE_ANNOTATIONS:
+            raise ValueError(f"rule_annotations: at most {MAX_RULE_ANNOTATIONS} saved annotations are allowed.")
+    return writes
+
+
 async def _persist(context, gid, baseline, writes):
     # If the caller disconnects, don't release our per-guild lock while the
     # to_thread write is still running.
@@ -402,7 +565,7 @@ async def update_settings(context, guild, member, changes, expected=None, reauth
     async with _lock(context, getattr(guild, "id", None)):
         manage, admin = _check_actor(context, guild, member)
         gid, mod, mem = guild.id, context.mod, context.mem
-        allowed_keys = set(_BOOL_SETTINGS) | {"staff_role_override", "exempt_channels", "skipped_rules", "words_mode", "words_allow", "words_block", "notes", "ping_users", "ping_mass", "yuki_server_bans", "slang_enabled", "slang_off_channels", "slang_forget", "slang_forget_other"} | _ADMIN_KEYS
+        allowed_keys = set(_BOOL_SETTINGS) | {"yuki_talk_channels", "staff_role_override", "exempt_channels", "skipped_rules", "rule_annotations", "words_mode", "words_allow", "words_block", "notes", "ping_users", "ping_mass", "yuki_server_bans", "slang_enabled", "slang_off_channels", "slang_forget", "slang_forget_other"} | _ADMIN_KEYS
         unknown = set(changes) - allowed_keys
         if unknown:
             raise ValueError("Unknown setting: " + ", ".join(sorted(unknown)))
@@ -463,7 +626,7 @@ async def update_settings(context, guild, member, changes, expected=None, reauth
                 else:
                     # None has the same automatic-selection behavior as deletion.
                     writes[key] = None
-            elif key in ("exempt_channels", "slang_off_channels", "access_roles"):
+            elif key in ("yuki_talk_channels", "exempt_channels", "slang_off_channels", "access_roles"):
                 limit = moderation.MAX_ACCESS if key == "access_roles" else (slang.MAX_OFF_CHANNELS if key == "slang_off_channels" else moderation.MAX_EXEMPT_CHANNELS)
                 selected = _choices(value, key, spec["options"], limit)
                 ids = [int(_id_string(v, key)) for v in selected]
@@ -479,6 +642,8 @@ async def update_settings(context, guild, member, changes, expected=None, reauth
                 selected = _choices(value, key, spec["options"], 25)
                 _, _, records = _rules_view(mod, gid)
                 writes[key] = [records[token] for token in selected]
+            elif key == "rule_annotations":
+                writes[key] = _rule_annotation_writes(value, spec, mod)
             elif key in ("words_mode", "access_level"):
                 obj("words" if key == "words_mode" else "access")["mode" if key == "words_mode" else "level"] = value
             elif key in ("words_allow", "words_block"):
@@ -557,6 +722,11 @@ async def update_settings(context, guild, member, changes, expected=None, reauth
                 allowed = {o["value"] for o in spec["options"]}
                 if any(item not in allowed for item in value):
                     raise ValueError(f"{key}: a selection is unavailable; refresh and try again.")
+            if spec["type"] == "rules_editor":
+                allowed = {entry["id"] for entry in spec["value"] if isinstance(entry, dict) and isinstance(entry.get("id"), str)}
+                submitted = [entry.get("id") for entry in value if isinstance(entry, dict)] if isinstance(value, list) else []
+                if len(submitted) != len(value) or len(submitted) != len(set(submitted)) or any(token not in allowed for token in submitted):
+                    raise ValueError("rule_annotations: a rule changed or is unavailable; refresh and try again.")
         await _persist(context, gid, baseline, writes)
         return await get_settings(context, guild, member)
 

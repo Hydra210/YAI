@@ -99,6 +99,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 "settings": {"enabled": False, "future_setting": "untouched"},
                 "rules": [{"n": 1, "text": "Be respectful", "category": "harassment"},
                           {"n": 2, "text": "No advertising", "category": "invites"}],
+                "rules_meta": {"channel_id": 401, "channel": "general"},
                 "skipped_rules": [{"n": 1, "text": "Be respectful", "extra": "keep"},
                                   {"n": 9, "text": "Old rule"}],
                 "exempt_channels": [401, 403],
@@ -141,7 +142,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         result = await ds.get_settings(self.ctx, self.g, self.admin)
         fields = await self.fields()
         expected = {"enabled", "exempt_staff", "slur_fallback", "harass_fallback", "directed_slurs", "reactions",
-                    "staff_role_override", "exempt_channels", "skipped_rules", "notes", "access_level", "access_roles", "access_users",
+                    "yuki_talk_channels", "staff_role_override", "exempt_channels", "skipped_rules", "rule_annotations", "notes", "access_level", "access_roles", "access_users",
                     "words_mode", "words_allow", "words_block", "words_slur_allow", "ping_users", "ping_mass", "yuki_server_bans",
                     "slang_enabled", "slang_off_channels", "slang_forget", "slang_forget_other"}
         self.assertEqual(expected, set(fields))
@@ -157,6 +158,11 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fields["ping_users"]["value"], False)
         self.assertEqual(fields["ping_mass"]["value"], True)
         self.assertEqual(fields["yuki_server_bans"]["value"], ["999"])
+        self.assertEqual(fields["yuki_talk_channels"]["value"], [])
+        self.assertEqual(fields["yuki_talk_channels"]["type"], "multi_select")
+        self.assertEqual(fields["rule_annotations"]["type"], "rules_editor")
+        self.assertEqual(fields["rule_annotations"]["value"][0]["source_channel"], "#general")
+        self.assertEqual(fields["rule_annotations"]["value"][0]["text"], "Be respectful")
         data = json.dumps(result)
         for secret in ("SECRET_KEY", "PRIVATE NOTE", "OTHER SERVER NOTE", "private-staff", '"reason"', '"at"'):
             self.assertNotIn(secret, data)
@@ -168,6 +174,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 if field["type"] == "boolean": self.assertIs(type(field["value"]), bool)
                 if field["type"] in ("select", "text"): self.assertIs(type(field["value"]), str)
                 if field["type"] in ("multi_select", "lines"): self.assertTrue(all(isinstance(v, str) for v in field["value"]))
+                if field["type"] == "rules_editor": self.assertTrue(all(isinstance(v, dict) for v in field["value"]))
 
     async def test_default_values_without_facts(self):
         self.mem.data[self.gid] = {}
@@ -286,6 +293,74 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         await self.update(self.ctx, self.g, self.manager, {"staff_role_override": "", "exempt_channels": []})
         self.assertIsNone(self.mem.fast_get(self.gid, "staff_role_override"))
         self.assertEqual(self.mod.exempt_channels(self.gid), [])
+
+    async def test_yuki_conversation_scope_accepts_only_visible_server_locations(self):
+        for value in (["403"], ["9999"]):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                await self.update(self.ctx, self.g, self.manager, {"yuki_talk_channels": value})
+        self.assertEqual(self.mem.writes, [])
+        await self.update(self.ctx, self.g, self.manager, {"yuki_talk_channels": ["401", "402"]})
+        self.assertEqual(self.mem.fast_get(self.gid, "yuki_talk_channels"), [401, 402])
+
+    async def test_talk_location_options_label_categories_filter_voice_and_hide_unavailable_names(self):
+        self.g.channels[1].type = SimpleNamespace(name="category")
+        voice = Channel(405, "private-voice")
+        voice.type = SimpleNamespace(name="voice")
+        self.g.channels.append(voice)
+        options = (await self.fields())["yuki_talk_channels"]["options"]
+        labels = {option["value"]: option["label"] for option in options}
+        self.assertEqual(labels["402"], "category (category)")
+        self.assertNotIn("405", labels)
+        self.mem.data[self.gid]["yuki_talk_channels"] = [403]
+        field_json = json.dumps((await self.fields())["yuki_talk_channels"])
+        self.assertIn("Unavailable channel (403)", field_json)
+        self.assertNotIn("private-staff", field_json)
+
+    async def test_rule_annotations_correct_quoted_text_and_enforcement_category(self):
+        self.mem.data[self.gid]["skipped_rules"] = []
+        rules = copy.deepcopy((await self.fields())["rule_annotations"]["value"])
+        first = next(rule for rule in rules if rule["n"] == 1)
+        second = next(rule for rule in rules if rule["n"] == 2)
+        first["correction"] = "Be respectful to other members."
+        first["guidance"] = "Remind them calmly and explain this covers personal insults."
+        second["category_override"] = "none"
+        await self.update(self.ctx, self.g, self.manager, {"rule_annotations": rules})
+
+        saved = self.mem.fast_get(self.gid, "rule_annotations")
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[0]["text"], "Be respectful")
+        effective = {rule["n"]: rule for rule in self.mod.effective_rules(self.gid)}
+        self.assertEqual(effective[1]["text"], first["correction"])
+        self.assertEqual(effective[1]["guidance"], first["guidance"])
+        self.assertEqual(effective[2]["category"], "none")
+        self.assertEqual(self.mod.enforced(self.gid)["harassment"]["text"], first["correction"])
+        self.assertNotIn("invites", self.mod.enforced(self.gid))
+
+        # Parser punctuation/rephrasing retains a conservative annotation match.
+        self.mem.data[self.gid]["rules"][0]["text"] = "Be respectful."
+        refreshed = {rule["n"]: rule for rule in self.mod.effective_rules(self.gid)}
+        self.assertEqual(refreshed[1]["text"], first["correction"])
+
+    async def test_rule_annotations_validate_limits_and_keep_unmatched_entries_visible(self):
+        rules = copy.deepcopy((await self.fields())["rule_annotations"]["value"])
+        rules[0]["correction"] = "Correct interpretation"
+        await self.update(self.ctx, self.g, self.manager, {"rule_annotations": rules})
+        before = copy.deepcopy(self.mem.fast_get(self.gid, "rule_annotations"))
+        bad = copy.deepcopy((await self.fields())["rule_annotations"]["value"])
+        bad[0]["guidance"] = "x" * (ds.MAX_RULE_GUIDANCE_LENGTH + 1)
+        with self.assertRaises(ValueError):
+            await self.update(self.ctx, self.g, self.manager, {"rule_annotations": bad})
+        self.assertEqual(self.mem.fast_get(self.gid, "rule_annotations"), before)
+
+        self.mem.data[self.gid]["rules"][0] = {"n": 1, "text": "A completely different rule", "category": "none"}
+        editor = (await self.fields())["rule_annotations"]["value"]
+        self.assertTrue(any(entry["stale"] and entry["text"] == "Be respectful" for entry in editor))
+        stale = next(entry for entry in editor if entry["stale"])
+        stale["correction"] = ""
+        stale["guidance"] = ""
+        stale["category_override"] = "auto"
+        await self.update(self.ctx, self.g, self.manager, {"rule_annotations": editor})
+        self.assertEqual(self.mem.fast_get(self.gid, "rule_annotations"), [])
 
     async def test_skips_save_wording_and_match_after_reorder_or_reparse(self):
         fields = await self.fields()
@@ -446,6 +521,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.g.channels.extend(channels)
         self.g.roles.extend(roles)
         cases = [
+            {"yuki_talk_channels": [str(c.id) for c in channels]},
             {"exempt_channels": [str(c.id) for c in channels]},
             {"slang_off_channels": [str(c.id) for c in channels]},
             {"access_roles": [str(r.id) for r in roles]},

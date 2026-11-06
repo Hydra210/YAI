@@ -161,6 +161,27 @@ a { color: inherit; }
 .multi-option:has(input:disabled) { color: #aaa; cursor: not-allowed; }
 .multi-option input { flex: none; width: 16px; height: 16px; margin: 1px 0 0; accent-color: #ddd; }
 .empty-options { padding: 13px; color: #b8b8b8; font-size: 11px; }
+.rules-editor { display: grid; gap: 12px; min-width: 0; }
+.rules-editor-empty { padding: 22px 18px; border: 1px solid transparent; border-radius: 11px; background: #101010; }
+.rules-editor-empty strong { display: block; color: #eee; font-size: 12px; }
+.rules-editor-empty p { margin: 6px 0 0; color: #b8b8b8; font-size: 11px; line-height: 1.6; }
+.rule-card { min-width: 0; padding: 18px; border: 1px solid transparent; border-radius: 12px; background: #101010; transition: border-color .15s, background .15s; }
+.rule-card:hover, .rule-card:focus-within { border-color: #555; background: #121212; }
+.rule-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.rule-number { margin: 0; color: #f4f4f4; font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
+.rule-original { margin: 10px 0 0; padding: 12px 14px; border-left: 2px solid #444; border-radius: 0 7px 7px 0; background: #171717; color: #e2e2e2; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rule-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; margin: 15px 0 18px; }
+.rule-meta-item { display: grid; gap: 4px; min-width: 0; }
+.rule-meta-label { color: #aaa; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.rule-meta-value { color: #dedede; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.rule-stale-note { margin: 11px 0 0; padding-left: 10px; border-left: 2px solid #a18452; color: #e2c994; font-size: 10px; line-height: 1.6; }
+.rule-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.rule-control-group { display: grid; align-content: start; gap: 7px; min-width: 0; }
+.rule-control-label { color: #e4e4e4; font-size: 10px; font-weight: 650; }
+.rule-editor-control { min-height: 82px; }
+.rule-editor-control.rule-guidance { min-height: 62px; }
+.rule-category-group { grid-column: 1 / -1; max-width: 320px; }
+.rule-editor-select { min-height: 42px; }
 .panel-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 26px; border-top: 1px solid #262626; background: #111; }
 .change-status { display: flex; align-items: center; min-height: 40px; color: #b8b8b8; font-size: 11px; line-height: 1.4; }
 .change-status.dirty { color: #f4dba9; }
@@ -200,6 +221,9 @@ a { color: inherit; }
   .section-grid { grid-template-columns: 1fr; }
   .section-card { min-height: 135px; }
   .settings-panel-head, .field-row, .panel-actions { padding-left: 19px; padding-right: 19px; }
+  .rule-card { padding: 15px; }
+  .rule-controls { grid-template-columns: minmax(0, 1fr); }
+  .rule-category-group { grid-column: auto; max-width: none; }
   .panel-actions { align-items: flex-start; flex-direction: column; }
   .action-buttons { width: 100%; }
   .action-buttons .button { flex: 1; }

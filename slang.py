@@ -25,6 +25,7 @@ import time
 import discord
 from discord import app_commands
 
+import channel_policy
 import pacing
 from moderation import has_slur
 
@@ -205,7 +206,8 @@ class Slang:
 
     def maybe_ask(self, message: discord.Message) -> bool:
         """Called for messages that weren't aimed at him. Returns True when he started looking at this one."""
-        if CHECK_CHANCE <= 0 or message.guild is None or message.author.id in self.mem.optouts:
+        if (CHECK_CHANCE <= 0 or message.guild is None or message.author.id in self.mem.optouts
+                or not channel_policy.conversation_allowed(self.mem, message.guild, message.channel)):
             return False
         gid = message.guild.id
         st = self.settings(gid)
@@ -271,7 +273,9 @@ class Slang:
         # the model call took a while: make sure nothing changed meanwhile
         st = self.settings(gid)
         now = time.time()
-        if not st["enabled"] or self.channel_off(channel, gid) or any(p["channel_id"] == channel.id for p in self.pending.values()):
+        if (not st["enabled"] or self.channel_off(channel, gid)
+                or not channel_policy.conversation_allowed(self.mem, message.guild, channel)
+                or any(p["channel_id"] == channel.id for p in self.pending.values())):
             return
         if now - self._ask_last.get(channel.id, 0) < CHANNEL_COOLDOWN or self._asked_today(gid) >= MAX_PER_DAY:
             return
@@ -279,6 +283,8 @@ class Slang:
         question = random.choice(QUESTIONS).format(t=term)
         try:
             await pacing.pace(gid)
+            if not channel_policy.conversation_allowed(self.mem, message.guild, channel):
+                return
             sent = await message.reply(question, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             return  # message deleted, or he can't talk there
@@ -339,8 +345,12 @@ class Slang:
         await self.run(self.mem.fast_set, gid, "slang_terms", learned)
         log.info("slang: learned %r = %r", p["term"], meaning)
         ack = random.choice(ACKS)
+        if not channel_policy.conversation_allowed(self.mem, message.guild, message.channel):
+            return True
         try:
             await pacing.pace(gid)
+            if not channel_policy.conversation_allowed(self.mem, message.guild, message.channel):
+                return True
             sent = await message.reply(ack, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             await self.run(self.mem.add_message, sent.id, gid, message.channel.id, self.client.user.id, "yuki", ack, True)
         except discord.HTTPException:

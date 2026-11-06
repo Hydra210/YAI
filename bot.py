@@ -24,6 +24,7 @@ from groq import (
 )
 
 import about
+import channel_policy
 import editguard
 import pacing
 import safety
@@ -1724,6 +1725,8 @@ def split_reply(text: str, limit: int = 1900) -> list:
 
 
 async def send_reply(message: discord.Message, reply: str, files) -> discord.Message | None:
+    if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+        return None
     policy = ping_policy(message.guild.id if message.guild else 0)
     authorized_mass = bool(message.guild and ai_staff(message.author) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
@@ -1734,6 +1737,8 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
         kwargs["files"] = to_discord_files(files)
     gid = message.guild.id if message.guild else None
     await pacing.pace(gid)
+    if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+        return None
     if editguard.was_edited(message.id):  # they edited their message while he was thinking / waiting his turn: don't answer it
         return None
     try:
@@ -1741,6 +1746,8 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
     except discord.HTTPException as e:
         # most common cause: the person deleted their message while Yuki was thinking
         log.info("reply failed (%s), sending as a plain message instead", e.status)
+        if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+            return None
         if files:
             kwargs["files"] = to_discord_files(files)
         sent = await message.channel.send(first, **kwargs)
@@ -1749,6 +1756,8 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
         return None
     for extra in rest:
         await pacing.pace(gid)
+        if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+            break
         if editguard.was_edited(message.id):
             break
         more = await message.channel.send(extra, allowed_mentions=kwargs["allowed_mentions"])
@@ -1813,11 +1822,23 @@ async def catch_edit_trick(channel_id: int, message_id: int, guild_id: int | Non
                 await asyncio.gather(*(delete_quietly(channel_id, mid) for mid in ids))
                 if ids:
                     await asyncio.gather(*(run(mem.delete_message, mid) for mid in ids), return_exceptions=True)
+                guild = client.get_guild(guild_id) if guild_id else None
+                channel = None
+                if guild is not None:
+                    channel = guild.get_channel_or_thread(channel_id) or guild.get_channel(channel_id)
+                if guild_id is not None and (guild is None or channel is None):
+                    log.info("edit-trick callout suppressed because channel %s is not cached", channel_id)
+                    return
                 try:
                     await pacing.pace(guild_id)
+                    if not channel_policy.conversation_allowed(mem, guild, channel):
+                        log.info("edit-trick callout suppressed in disallowed channel %s", channel_id)
+                        return
                     await client.get_partial_messageable(channel_id).get_partial_message(message_id).reply(
                         editguard.callout(deleted=bool(ids)), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
                 except discord.HTTPException:
+                    if not channel_policy.conversation_allowed(mem, guild, channel):
+                        return
                     await client.get_partial_messageable(channel_id).send(
                         editguard.callout(deleted=bool(ids)), allowed_mentions=discord.AllowedMentions.none())
                 log.info("edit-trick guard: caught an edit on message %s (deleted %d answer(s))", message_id, len(ids))
@@ -1840,6 +1861,8 @@ async def log_message(message: discord.Message):
 
 
 async def _reply(message: discord.Message, roast: bool = False):
+    if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+        return
     scope = scope_of(message)
     text = render_content(message, strip_bot=True)
     if roast and not text:
@@ -1847,6 +1870,8 @@ async def _reply(message: discord.Message, roast: bool = False):
     has_image = any(skills.is_image(a) for a in message.attachments)
     if not text and not has_image:
         await pacing.pace(message.guild.id if message.guild else None)
+        if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+            return
         await message.reply("...what. i was napping")
         return
     if not text:
@@ -1867,6 +1892,8 @@ async def _reply(message: discord.Message, roast: bool = False):
         if reply:
             await typing_pause(len(reply), started)  # bigger reply = typing bubble stays up longer
 
+    if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+        return
     if roast and not reply:
         return
     editguard.set_reply(message.id, reply)
@@ -1880,6 +1907,8 @@ async def _reply(message: discord.Message, roast: bool = False):
 
 async def handle_reply(message: discord.Message, roast: bool = False):
     """One reply, fully isolated: its own task, a hard timeout, and it can never take other chats down with it."""
+    if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+        return
     if yuki_ban_reason(message.author.id, message.guild.id if message.guild else None):
         return
     cid = message.guild.id if message.guild else message.channel.id  # one conversation at a time per server (per chat in DMs)
@@ -1888,8 +1917,9 @@ async def handle_reply(message: discord.Message, roast: bool = False):
         if gate == "warn":
             with contextlib.suppress(Exception):
                 await pacing.pace(message.guild.id if message.guild else None)
-                await message.reply("ok that's too many messages too fast, i'm ignoring you for a minute",
-                                    mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+                if channel_policy.conversation_allowed(mem, message.guild, message.channel):
+                    await message.reply("ok that's too many messages too fast, i'm ignoring you for a minute",
+                                        mention_author=False, allowed_mentions=discord.AllowedMentions.none())
             return
         if gate:
             return
@@ -1907,7 +1937,8 @@ async def handle_reply(message: discord.Message, roast: bool = False):
         if not roast:
             with contextlib.suppress(Exception):
                 await pacing.pace(message.guild.id if message.guild else None)
-                await message.reply("my brain lagged out, try again", mention_author=False)
+                if channel_policy.conversation_allowed(mem, message.guild, message.channel):
+                    await message.reply("my brain lagged out, try again", mention_author=False)
     except Exception:
         STATS["errors"] += 1
         log.exception("reply failed in channel %s", cid)
@@ -1922,7 +1953,8 @@ _roast_last: dict[int, float] = {}
 
 def maybe_roast(message: discord.Message) -> None:
     """Now and then Yuki butts in on a message from his rival that wasn't aimed at him. Code decides, the AI only words it."""
-    if message.guild is None or message.author.id in mem.optouts or len(message.content.strip()) < 8:
+    if (message.guild is None or not channel_policy.conversation_allowed(mem, message.guild, message.channel)
+            or message.author.id in mem.optouts or len(message.content.strip()) < 8):
         return
     now = time.time()
     if now - _roast_last.get(message.channel.id, 0) < ROAST_COOLDOWN or random.random() > ROAST_CHANCE:
@@ -1978,9 +2010,13 @@ async def pick_reaction(message: discord.Message) -> str | None:
 
 async def react_to(message: discord.Message) -> None:
     try:
+        if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+            return
         emoji = await pick_reaction(message)
         if not emoji:
             log.info("reaction: nothing fit, skipped")
+            return
+        if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
             return
         await message.add_reaction(emoji)
         log.info("reaction: %s in #%s", emoji, getattr(message.channel, "name", message.channel.id))
@@ -1994,7 +2030,8 @@ async def react_to(message: discord.Message) -> None:
 
 def maybe_react(message: discord.Message) -> None:
     """Now and then he reacts to a message that wasn't for him. Code decides when, the model (or keyword rules) picks the emoji."""
-    if REACT_CHANCE <= 0 or message.guild is None or message.author.id in mem.optouts:
+    if (REACT_CHANCE <= 0 or message.guild is None or message.author.id in mem.optouts
+            or not channel_policy.conversation_allowed(mem, message.guild, message.channel)):
         return
     if not mod.settings(message.guild.id).get("reactions", True):  # staff turned emoji reactions off in the web dashboard
         return
@@ -2031,6 +2068,9 @@ def spawn(coro) -> None:
 @app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def yuki_command(interaction: discord.Interaction, question: str, image: discord.Attachment | None = None):
+    policy_guild = interaction.guild or client.get_guild(interaction.guild_id) or interaction.guild_id
+    if not channel_policy.conversation_allowed(mem, policy_guild, interaction.channel):
+        return await interaction.response.send_message("i can't chat in this channel", ephemeral=True)
     denied = yuki_ban_reason(interaction.user.id, interaction.guild_id)
     if denied:
         return await interaction.response.send_message(denied, ephemeral=True)
@@ -2073,15 +2113,21 @@ async def yuki_command(interaction: discord.Interaction, question: str, image: d
     policy = ping_policy(scope)
     authorized_mass = bool(interaction.guild and ai_staff(interaction.user) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
+    if not channel_policy.conversation_allowed(mem, policy_guild, interaction.channel):
+        return await interaction.followup.send("i can't chat in this channel", ephemeral=True)
     first, *rest = split_reply(reply)[:safety.MAX_REPLY_PARTS]
     kwargs = {"allowed_mentions": discord.AllowedMentions(everyone=authorized_mass,
               roles=False, users=policy["users"], replied_user=False)}
     if files:
         kwargs["files"] = to_discord_files(files)
     await pacing.pace(interaction.guild_id)
+    if not channel_policy.conversation_allowed(mem, policy_guild, interaction.channel):
+        return await interaction.followup.send("i can't chat in this channel", ephemeral=True)
     sent = await interaction.followup.send(first, **kwargs)
     for extra in rest:
         await pacing.pace(interaction.guild_id)
+        if not channel_policy.conversation_allowed(mem, policy_guild, interaction.channel):
+            break
         await interaction.followup.send(extra, allowed_mentions=kwargs["allowed_mentions"])
     await run(mem.add_message, sent.id, scope, channel_key, client.user.id, "yuki", reply, True)
     STATS["replies"] += 1
