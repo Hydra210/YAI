@@ -221,10 +221,12 @@ conversational ping policy, and per-server Yuki AI bans. Some controls, includin
 moderation access and low-level slur exceptions, remain restricted to the server
 owner or an administrator. The path `/dashboard` is a web URL, not a Discord slash command.
 
-The **Conversation channels** section can limit Yuki's conversational replies,
-including mentions, spontaneous chat, and `/yuki`, to selected text channels and
-categories; leaving it empty keeps conversation enabled everywhere. This does not
-disable automatic moderation or permission-checked server-management commands.
+The **Conversation channels** section lets staff exclude channels and categories
+from Yuki's conversational replies, including mentions, spontaneous chat, and
+`/yuki`. Excluding a channel also excludes its threads; excluding a category
+excludes all child channels and their threads. Leave the selection empty to allow
+conversation everywhere. This does not disable automatic moderation or
+permission-checked server-management commands.
 The **Server rules** section shows Yuki's parsed rules and source channel. Staff
 can add corrected wording, an enforcement category, and reminder guidance there;
 these annotations are kept separate from the Discord rules channel and survive

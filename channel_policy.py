@@ -1,8 +1,8 @@
-"""Guild channel allow-list policy for Yuki's conversational outputs.
+"""Guild channel exclusion policy for Yuki's conversational outputs.
 
-The dashboard stores ``yuki_talk_channels`` as Discord channel/category ID
-strings or integers. An absent, empty, or wholly malformed value is treated as
-unset so existing installations continue to allow conversation everywhere.
+The dashboard stores excluded Discord channel/category IDs in the existing
+``yuki_talk_channels`` fact for backward compatibility. Missing, empty, or
+wholly malformed values leave conversation enabled everywhere.
 """
 from __future__ import annotations
 
@@ -74,8 +74,8 @@ def conversation_allowed(mem, guild, channel) -> bool:
     """Return whether Yuki may produce conversational output in ``channel``.
 
     DMs (no guild) are always allowed. Guilds with no valid selected IDs keep
-    the legacy allow-all behavior. Selected IDs match the current channel, its
-    category, a thread's parent channel, or that parent's category.
+    the legacy allow-all behavior. A selected excluded ID matches the current
+    channel, its category, a thread's parent channel, or that parent's category.
     """
     if guild is None:
         return True
@@ -99,9 +99,9 @@ def conversation_allowed(mem, guild, channel) -> bool:
     if not selected_ids:
         return True
     if channel is None:
-        return False
+        return True
     try:
-        return bool(selected_ids & _channel_ids(guild, channel))
+        return not bool(selected_ids & _channel_ids(guild, channel))
     except Exception:
-        # A broken channel/cache object cannot establish a positive match.
-        return False
+        # Only known exclusions should suppress conversation.
+        return True

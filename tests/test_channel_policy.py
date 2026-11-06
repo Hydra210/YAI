@@ -22,6 +22,7 @@ class ChannelPolicyTests(unittest.TestCase):
         self.category = SimpleNamespace(id=20)
         self.parent = SimpleNamespace(id=30, category_id=20, category=self.category)
         self.child = SimpleNamespace(id=31, category_id=20, category=self.category, parent_id=None)
+        self.other_child = SimpleNamespace(id=32, category_id=60, category=SimpleNamespace(id=60), parent_id=None)
         self.thread = SimpleNamespace(id=40, parent_id=30, parent=self.parent, category_id=None)
         self.missing_parent_thread = SimpleNamespace(id=41, parent_id=30, parent=None, category_id=None)
         self.unrelated = SimpleNamespace(id=50, category_id=60, parent_id=None)
@@ -35,26 +36,28 @@ class ChannelPolicyTests(unittest.TestCase):
             with self.subTest(config=config):
                 self.assertTrue(self.allowed(config, self.unrelated))
 
-    def test_direct_channel_matches_int_or_string(self):
-        self.assertTrue(self.allowed(["50"], self.unrelated))
-        self.assertTrue(self.allowed([50], self.unrelated))
-        self.assertFalse(self.allowed(["51"], self.unrelated))
+    def test_selected_channel_is_excluded_and_other_channels_remain_allowed(self):
+        self.assertFalse(self.allowed(["50"], self.unrelated))
+        self.assertFalse(self.allowed([50], self.unrelated))
+        self.assertTrue(self.allowed(["51"], self.unrelated))
 
-    def test_category_allows_child_channel(self):
-        self.assertTrue(self.allowed(["20"], self.child))
+    def test_selected_category_excludes_child_channels_only(self):
+        self.assertFalse(self.allowed(["20"], self.child))
+        self.assertTrue(self.allowed(["20"], self.other_child))
 
-    def test_thread_matches_its_id_parent_and_parent_category(self):
-        self.assertTrue(self.allowed(["40"], self.thread))
-        self.assertTrue(self.allowed(["30"], self.thread))
-        self.assertTrue(self.allowed(["20"], self.thread))
+    def test_selected_channel_or_category_excludes_threads(self):
+        self.assertFalse(self.allowed(["40"], self.thread))
+        self.assertFalse(self.allowed(["30"], self.thread))
+        self.assertFalse(self.allowed(["20"], self.thread))
 
-    def test_thread_matches_parent_id_without_cached_parent(self):
+    def test_thread_matches_selected_parent_without_cached_parent(self):
         self.guild.channels.clear()
-        self.assertTrue(self.allowed(["30"], self.missing_parent_thread))
-        self.assertFalse(self.allowed(["20"], self.missing_parent_thread))
+        self.assertFalse(self.allowed(["30"], self.missing_parent_thread))
+        # An uncached parent cannot reveal its category, so unrelated categories remain allowed.
+        self.assertTrue(self.allowed(["20"], self.missing_parent_thread))
 
-    def test_denies_unrelated_channel(self):
-        self.assertFalse(self.allowed(["30", "20"], self.unrelated))
+    def test_unrelated_selected_exclusions_do_not_block(self):
+        self.assertTrue(self.allowed(["30", "20"], self.unrelated))
 
     def test_dm_is_always_allowed(self):
         dm = SimpleNamespace(id=70)
@@ -64,12 +67,14 @@ class ChannelPolicyTests(unittest.TestCase):
         for config in ("not-a-list", {"channel": 50}, 50, [None, {}, "bad", True, 0]):
             with self.subTest(config=config):
                 self.assertTrue(self.allowed(config, self.unrelated))
-        self.assertFalse(self.allowed(["99", None, "bad"], self.unrelated))
+        self.assertTrue(self.allowed(["99", None, "bad"], self.unrelated))
+        self.assertFalse(self.allowed(["50", None, "bad"], self.unrelated))
         self.assertTrue(conversation_allowed(Memory(fail=True), self.guild, self.unrelated))
+        self.assertTrue(conversation_allowed(Memory(["50"]), self.guild, None))
 
     def test_guild_id_works_without_a_cached_guild_object(self):
-        self.assertFalse(conversation_allowed(Memory(["99"]), 100, self.unrelated))
-        self.assertTrue(conversation_allowed(Memory(["50"]), 100, self.unrelated))
+        self.assertTrue(conversation_allowed(Memory(["99"]), 100, self.unrelated))
+        self.assertFalse(conversation_allowed(Memory(["50"]), 100, self.unrelated))
 
 
 if __name__ == "__main__":
