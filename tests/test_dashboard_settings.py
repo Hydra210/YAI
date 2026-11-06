@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import discord
 import dashboard_settings as ds
+import channel_policy
 import memory
 import moderation
 
@@ -294,23 +295,34 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.mem.fast_get(self.gid, "staff_role_override"))
         self.assertEqual(self.mod.exempt_channels(self.gid), [])
 
-    async def test_yuki_conversation_scope_accepts_only_visible_server_locations(self):
+    async def test_yuki_conversation_scope_excludes_only_selected_visible_locations(self):
         for value in (["403"], ["9999"]):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 await self.update(self.ctx, self.g, self.manager, {"yuki_talk_channels": value})
         self.assertEqual(self.mem.writes, [])
         await self.update(self.ctx, self.g, self.manager, {"yuki_talk_channels": ["401", "402"]})
         self.assertEqual(self.mem.fast_get(self.gid, "yuki_talk_channels"), [401, 402])
+        child = SimpleNamespace(id=450, category_id=402, parent_id=None)
+        other = SimpleNamespace(id=451, category_id=499, parent_id=None)
+        self.assertFalse(channel_policy.conversation_allowed(self.mem, self.g, self.g.channels[0]))
+        self.assertFalse(channel_policy.conversation_allowed(self.mem, self.g, child))
+        self.assertTrue(channel_policy.conversation_allowed(self.mem, self.g, other))
 
-    async def test_talk_location_options_label_categories_filter_voice_and_hide_unavailable_names(self):
+    async def test_talk_location_options_label_categories_and_all_visible_channel_types(self):
         self.g.channels[1].type = SimpleNamespace(name="category")
-        voice = Channel(405, "private-voice")
-        voice.type = SimpleNamespace(name="voice")
-        self.g.channels.append(voice)
+        kinds = [(405, "voice-room", "voice"), (406, "stage-room", "stage_voice"),
+                 (407, "forum-room", "forum"), (408, "media-room", "media")]
+        for ident, name, kind in kinds:
+            channel = Channel(ident, name)
+            channel.type = SimpleNamespace(name=kind)
+            self.g.channels.append(channel)
         options = (await self.fields())["yuki_talk_channels"]["options"]
         labels = {option["value"]: option["label"] for option in options}
         self.assertEqual(labels["402"], "category (category)")
-        self.assertNotIn("405", labels)
+        self.assertEqual(labels["405"], "voice-room (voice channel)")
+        self.assertEqual(labels["406"], "stage-room (stage channel)")
+        self.assertEqual(labels["407"], "forum-room (forum channel)")
+        self.assertEqual(labels["408"], "media-room (media channel)")
         self.mem.data[self.gid]["yuki_talk_channels"] = [403]
         field_json = json.dumps((await self.fields())["yuki_talk_channels"])
         self.assertIn("Unavailable channel (403)", field_json)

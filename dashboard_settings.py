@@ -158,20 +158,32 @@ def _channel_options(guild, member, selected=()):
 
 
 def _conversation_channel_options(guild, member, selected=()):
-    """Only offer text-capable channels and categories, without disclosing hidden names."""
+    """Offer all visible guild channels and categories without disclosing hidden names."""
     visible = {option["value"] for option in _channel_options(guild, member, ())}
     out, seen = [], set()
     for channel in getattr(guild, "channels", ()):
         value = str(getattr(channel, "id", ""))
         if not value or value not in visible:
             continue
-        kind = getattr(getattr(channel, "type", None), "name", None)
-        if kind is None:
-            kind = str(getattr(channel, "type", "")).lower().split(".")[-1]
+        channel_type = getattr(channel, "type", None)
+        kind = getattr(channel_type, "name", None)
+        if kind is None and channel_type is not None:
+            kind = str(channel_type).lower().split(".")[-1]
         category = isinstance(channel, getattr(discord, "CategoryChannel", ())) or kind == "category"
-        if kind and not category and kind not in {"text", "news", "forum"}:
-            continue
-        label = f"{channel.name} (category)" if category else f"#{channel.name}"
+        if category:
+            label = f"{channel.name} (category)"
+        else:
+            type_labels = {
+                "text": "text channel", "news": "announcement channel", "voice": "voice channel",
+                "stage_voice": "stage channel", "forum": "forum channel", "media": "media channel",
+            }
+            type_label = type_labels.get(kind, kind.replace("_", " ") + " channel" if kind else "")
+            if kind in {"text", "news"}:
+                label = f"#{channel.name} ({type_label})"
+            elif type_label:
+                label = f"{channel.name} ({type_label})"
+            else:
+                label = f"#{channel.name}"
         out.append(_option(value, label))
         seen.add(value)
     for value in selected:
@@ -306,8 +318,8 @@ def _sections(context, guild, member, manage, admin):
     sections = []
     if manage:
         talk_channels = _ids(_get(mem, gid, "yuki_talk_channels", []) or [])
-        sections.append({"id": "conversation", "title": "Conversation channels", "description": "Limit where Yuki chats. Moderation and authorized server-management commands stay available everywhere.", "fields": [
-            _field("yuki_talk_channels", "Allowed channels and categories", "Leave empty to allow conversation everywhere. If you select locations, conversational replies—including @mentions, spontaneous chat, and /yuki—are limited to those channels, their threads, and child channels of selected categories.", "multi_select", talk_channels, _conversation_channel_options(guild, member, talk_channels)),
+        sections.append({"id": "conversation", "title": "Conversation channels", "description": "Exclude locations from Yuki's conversational replies. Moderation and authorized server-management commands stay available everywhere.", "fields": [
+            _field("yuki_talk_channels", "Channels and categories where Yuki stays quiet", "Select any visible server channel or category where Yuki should not chat. Excluded channels include their threads; excluded categories include all child channels and their threads. This applies to @mentions, spontaneous replies, and /yuki. Leave empty to allow conversation everywhere.", "multi_select", talk_channels, _conversation_channel_options(guild, member, talk_channels)),
         ]})
         settings = mod.settings(gid)
         fields = [_field(k, label, description, "boolean", bool(settings[k]))
