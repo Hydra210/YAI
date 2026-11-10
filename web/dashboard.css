@@ -240,3 +240,98 @@ a { color: inherit; }
   .action-buttons .button { flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
+
+
+/* Full-screen Yuki sign-in backdrop. The square avatar is enlarged and blurred
+   past the viewport edges so there are no empty side bars. */
+.topbar { position: relative; z-index: 3; background: rgba(0, 0, 0, .62); backdrop-filter: blur(16px); }
+.login-page {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  min-height: 100vh;
+  overflow: hidden;
+  isolation: isolate;
+  padding: 104px 20px 32px;
+  background: #080808;
+}
+.login-backdrop {
+  position: absolute;
+  inset: -42px;
+  z-index: -1;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at center, rgba(20, 20, 20, .3), rgba(0, 0, 0, .88)),
+    #080808;
+}
+.login-backdrop img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  opacity: 0;
+  filter: blur(34px) brightness(.38) saturate(.82);
+  transform: scale(1.13);
+  transition: opacity .45s ease;
+}
+.login-backdrop img.loaded { opacity: 1; }
+.login-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at center, rgba(0, 0, 0, .08) 0%, rgba(0, 0, 0, .46) 68%, rgba(0, 0, 0, .72) 100%),
+    linear-gradient(135deg, rgba(0, 0, 0, .25), rgba(0, 0, 0, .5));
+}
+.login-card {
+  position: relative;
+  width: min(100%, 410px);
+  padding: 38px;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 20px;
+  background: rgba(10, 10, 10, .76);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .48);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+.login-eyebrow {
+  margin-bottom: 16px;
+  color: #c4c4c4;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .17em;
+}
+.login-card h1 {
+  margin: 0;
+  font-size: clamp(28px, 5vw, 36px);
+  font-weight: 680;
+  letter-spacing: -.055em;
+}
+.login-description {
+  margin: 10px 0 27px;
+  color: #b8b8b8;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.login-button {
+  min-height: 54px;
+  border: 1px solid rgba(255, 255, 255, .13);
+  background: #5865f2;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 8px 24px rgba(88, 101, 242, .2);
+}
+.login-button:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: rgba(255, 255, 255, .35);
+  background: #4752c4;
+}
+.login-button svg { width: 20px; height: 20px; }
+@media (max-width: 600px) {
+  .login-page { padding: 96px 18px 28px; }
+  .login-card { padding: 30px 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-backdrop img { transition: none; }
+}
