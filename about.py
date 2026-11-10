@@ -12,12 +12,17 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.6.0"
-VERSION_DATE = "2026-11-05"
-VERSION_NOTE = "dashboard-first server settings"
+VERSION = "1.18.7.0"
+VERSION_DATE = "2026-11-10"
+VERSION_NOTE = "dashboard polish and persistent sign-in"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.18.7.0", "date": "2026-11-10", "title": "dashboard polish and persistent sign-in",
+     "changes": ["dashboard sign-in now keeps the session cookie for up to 30 days and refreshes Discord access tokens when a refresh token is available. a Render restart or redeploy can still end the in-memory session, so you may need to sign in again.",
+                 "added a one-time cookie notice explaining the essential sign-in and security cookies; accepting it is remembered in the browser.",
+                 "the server rules editor now keeps all rules inside one scrollable list, with a layout sized for desktop and mobile.",
+                 "fixed the selected-server background so the artwork fills the whole workspace without black borders, on desktop and mobile."]},
     {"version": "1.18.6.0", "date": "2026-11-05", "title": "server setup moves to the dashboard",
      "changes": ["the Discord-login dashboard now handles server setup, including moderation, word filters, access, slang learning, ping policy and server Yuki bans.",
                  "removed duplicate configuration slash commands. `/mod status`, `/mod test`, `/mod refresh`, `/slang status`, `/slang list`, `/pingstatus` and `/yukiban list` remain for diagnostics.",
