@@ -682,3 +682,20 @@ def test_channel_view_handles_unknown_discord_channel_type_and_overwrites():
     assert view.overwrites_for(everyone).view_channel is False
     assert view.overwrites_for(member_role).view_channel is True
     assert view.overwrites_for(member).view_channel is False
+
+
+@pytest.mark.asyncio
+async def test_authorization_uses_raw_channel_endpoint_for_unknown_channel_types(env):
+    calls = []
+    async def raw_channels(guild_id):
+        calls.append(guild_id)
+        return [{"id": "777", "name": "new-channel", "type": 20, "permission_overwrites": []}]
+    env.client.http = SimpleNamespace(get_all_guild_channels=raw_channels)
+
+    guild, member = await env.dashboard._authorized(
+        "123", "10", {"owner": False, "permissions": 1 << 5}
+    )
+
+    assert calls == [123]
+    assert guild.channels[0].id == 777
+    assert guild.channels[0].type.name == "unknown_20"
