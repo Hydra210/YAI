@@ -193,6 +193,8 @@
       const url = new URL(profile.avatar_url);
       if (url.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) {
         state.botAvatarUrl = url.href;
+        const brandAvatar = $('brand-avatar');
+        if (brandAvatar) brandAvatar.src = state.botAvatarUrl;
       }
     } catch (_) {
       // A missing bot avatar must not prevent the dashboard from loading.
