@@ -107,3 +107,21 @@ def test_sign_in_uses_yukis_blurred_avatar_backdrop_and_discord_button():
     assert "loadLoginBackdrop" in js and "/dashboard/api/bot-profile" in js
     assert ".login-backdrop img" in css and "filter: blur(34px)" in css
     assert "background: #5865f2" in css
+
+
+def test_rules_share_one_scrollable_container_and_cookie_notice_is_persistent():
+    html = (ROOT / "web/dashboard.html").read_text()
+    js = (ROOT / "web/dashboard.js").read_text()
+    css = (ROOT / "web/dashboard.css").read_text()
+
+    assert 'id="cookie-banner"' in html
+    assert 'id="accept-cookies"' in html
+    assert "essential cookies" in html
+    assert "yai_cookie_notice=accepted" in js
+    assert "Max-Age=31536000" in js
+    assert "const list = el('div', 'rules-list')" in js
+    assert "list.append(card)" in js
+    assert "editor.append(list)" in js
+    assert ".rules-list {" in css and "overflow-y: auto" in css
+    assert "@media (max-width: 680px)" in css
+    assert ".cookie-banner[hidden]" in css
