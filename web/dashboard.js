@@ -150,6 +150,7 @@
       $('initial-state').hidden = true;
       if (!me.authenticated) {
         showLogin(Boolean(me.oauth_configured));
+        loadLoginBackdrop();
         return;
       }
       state.user = me.user || {};
@@ -182,6 +183,20 @@
       login.href = '/dashboard/login';
       login.removeAttribute('aria-disabled');
       login.removeAttribute('tabindex');
+    }
+  }
+  async function loadLoginBackdrop() {
+    const image = $('login-backdrop-image');
+    if (!image) return;
+    try {
+      const profile = await request('/dashboard/api/bot-profile');
+      if (!profile || typeof profile.avatar_url !== 'string') return;
+      const url = new URL(profile.avatar_url);
+      if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) return;
+      image.addEventListener('load', () => image.classList.add('loaded'), { once: true });
+      image.src = url.href;
+    } catch (_) {
+      // Sign-in remains usable if the public avatar lookup is temporarily unavailable.
     }
   }
   async function loadStatistics() {
