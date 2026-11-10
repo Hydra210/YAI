@@ -41,7 +41,8 @@ _BASE = Path(__file__).resolve().parent / "web"
 _API = "https://discord.com/api/v10"
 _AUTHORIZE = "https://discord.com/oauth2/authorize"
 _STATE_TTL = 600
-_SESSION_TTL = 8 * 60 * 60
+_SESSION_TTL = 30 * 24 * 60 * 60
+_ACCESS_TOKEN_SKEW = 60
 _LIMIT = 10000
 _MAX_STATES_PER_PEER = 20
 _TIMEOUT = 10
@@ -282,9 +283,38 @@ class _Dashboard:
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError):
             raise _Unavailable() from None
 
+    async def _refresh_session(self, token, session):
+        refresh_token = session.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token or len(refresh_token) > 4096:
+            raise _Unauthenticated()
+        data = await self._discord("POST", "/oauth2/token", data={
+            "client_id": self.config.client_id, "client_secret": self.config.secret,
+            "grant_type": "refresh_token", "refresh_token": refresh_token,
+        }, headers={"Accept": "application/json"})
+        access_token = data.get("access_token") if isinstance(data, dict) else None
+        expires_in = data.get("expires_in") if isinstance(data, dict) else None
+        rotated_refresh = data.get("refresh_token", refresh_token) if isinstance(data, dict) else None
+        if (not isinstance(access_token, str) or not access_token or len(access_token) > 4096
+                or not isinstance(expires_in, (int, float)) or isinstance(expires_in, bool)
+                or not math.isfinite(expires_in) or expires_in <= 0
+                or not isinstance(rotated_refresh, str) or not rotated_refresh or len(rotated_refresh) > 4096
+                or str(data.get("token_type", "")).lower() != "bearer"):
+            raise _Unauthenticated()
+        self._still_valid(token, session)
+        session["access_token"] = access_token
+        session["refresh_token"] = rotated_refresh
+        session["access_expires"] = time.monotonic() + int(expires_in)
+
     async def _identity(self, token, session):
         try:
-            data = await self._discord("GET", "/users/@me", headers={"Authorization": "Bearer " + session["access_token"]})
+            self._still_valid(token, session)
+            if session.get("access_expires", 0) <= time.monotonic() + _ACCESS_TOKEN_SKEW:
+                await self._refresh_session(token, session)
+            try:
+                data = await self._discord("GET", "/users/@me", headers={"Authorization": "Bearer " + session["access_token"]})
+            except _Unauthenticated:
+                await self._refresh_session(token, session)
+                data = await self._discord("GET", "/users/@me", headers={"Authorization": "Bearer " + session["access_token"]})
             user = _public_user(data)
             if user["id"] != session["user"]["id"]:
                 raise _Unauthenticated()
@@ -492,10 +522,12 @@ class _Dashboard:
             }, headers={"Accept": "application/json"})
             access_token = data.get("access_token") if isinstance(data, dict) else None
             expires_in = data.get("expires_in") if isinstance(data, dict) else None
+            refresh_token = data.get("refresh_token") if isinstance(data, dict) else None
             scope = data.get("scope", "") if isinstance(data, dict) else ""
             if (not isinstance(access_token, str) or not access_token or len(access_token) > 4096
                     or not isinstance(expires_in, (int, float)) or isinstance(expires_in, bool)
                     or not math.isfinite(expires_in) or expires_in <= 0
+                    or (refresh_token is not None and (not isinstance(refresh_token, str) or not refresh_token or len(refresh_token) > 4096))
                     or not isinstance(scope, str) or not {"identify", "guilds"}.issubset(scope.split())
                     or str(data.get("token_type", "")).lower() != "bearer"):
                 raise _Unavailable()
@@ -506,10 +538,14 @@ class _Dashboard:
             # Prevent session fixation and replace any old local session.
             self.sessions.pop(request.cookies.get(self.session_cookie, ""), None)
             key, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            lifetime = min(int(expires_in), _SESSION_TTL)
+            # Keep the browser signed in for up to 30 days when Discord grants
+            # a refresh token; otherwise fall back to the access-token lifetime.
+            lifetime = _SESSION_TTL if refresh_token else min(int(expires_in), _SESSION_TTL)
             if lifetime <= 0:
                 raise _Unavailable()
             self.sessions[key] = {"user": user, "access_token": access_token,
+                                  "refresh_token": refresh_token,
+                                  "access_expires": time.monotonic() + int(expires_in),
                                   "csrf": csrf, "expires": time.monotonic() + lifetime}
             response = web.Response(status=302, headers={"Location": "/dashboard"})
             self._cookie(response, self.session_cookie, key, lifetime)
