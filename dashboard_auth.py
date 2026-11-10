@@ -492,6 +492,17 @@ class _Dashboard:
         return web.json_response({"authenticated": True, "user": user, "csrf": session["csrf"],
                                   "oauth_configured": True})
 
+    async def statistics(self, request):
+        """Return the bot-wide guild inventory; this endpoint is read-only."""
+        token, session = self._session(request)
+        await self._identity(token, session)
+        if not self._ready():
+            raise _Unavailable()
+        guilds = [_guild_info(guild) for guild in list(self.context.client.guilds)]
+        guilds.sort(key=lambda guild: (guild["name"].casefold(), guild["id"]))
+        self._still_valid(token, session)
+        return web.json_response({"total": len(guilds), "guilds": guilds})
+
     async def guilds(self, request):
         session, ids = await self._identity_and_guilds(request)
         client = self.context.client
@@ -668,6 +679,7 @@ def setup_dashboard(app, context):
     app.router.add_get("/dashboard/callback", dashboard.callback)
     app.router.add_post("/dashboard/logout", dashboard.logout)
     app.router.add_get("/dashboard/api/me", dashboard.me)
+    app.router.add_get("/dashboard/api/statistics", dashboard.statistics)
     app.router.add_get("/dashboard/api/guilds", dashboard.guilds)
     app.router.add_get("/dashboard/api/guilds/{guild_id}", dashboard.snapshot)
     app.router.add_put("/dashboard/api/guilds/{guild_id}", dashboard.update)
