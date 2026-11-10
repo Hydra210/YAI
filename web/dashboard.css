@@ -414,3 +414,66 @@ a { color: inherit; }
   }
   .sidebar-inner { min-height: auto; }
 }
+
+
+/* Keep large server rule sets inside one contained scrolling region. */
+.rules-list {
+  display: grid;
+  gap: 12px;
+  max-height: min(68vh, 820px);
+  min-height: 180px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #555 transparent;
+  padding: 2px 8px 2px 2px;
+  scroll-padding-block: 8px;
+}
+.rules-list:focus-visible {
+  outline: 2px solid #aaa;
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+/* Essential-cookie notice; no analytics or advertising consent is requested. */
+.cookie-banner {
+  position: fixed;
+  z-index: 80;
+  inset-inline: 20px;
+  bottom: 20px;
+  width: min(720px, calc(100% - 40px));
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  border: 1px solid #444;
+  border-radius: 14px;
+  background: rgba(17, 17, 17, .96);
+  color: #f5f5f5;
+  box-shadow: 0 18px 55px #000b;
+  backdrop-filter: blur(18px);
+}
+.cookie-banner[hidden] { display: none; }
+.cookie-copy { min-width: 0; }
+.cookie-copy strong { display: block; font-size: 12px; }
+.cookie-copy p { margin: 6px 0 0; color: #c2c2c2; font-size: 11px; line-height: 1.55; }
+.cookie-accept { flex: none; min-width: 104px; }
+@media (max-width: 680px) {
+  .rules-list {
+    max-height: min(62vh, 560px);
+    min-height: 220px;
+    padding-right: 5px;
+  }
+  .cookie-banner {
+    inset-inline: 12px;
+    bottom: 12px;
+    width: calc(100% - 24px);
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+  }
+  .cookie-accept { width: 100%; }
+}
