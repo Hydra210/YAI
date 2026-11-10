@@ -30,14 +30,16 @@
     </div>
 
     <section class="login-page" id="login-page" hidden aria-labelledby="login-heading">
+      <div class="login-backdrop" aria-hidden="true">
+        <img id="login-backdrop-image" alt="">
+      </div>
       <div class="login-card">
-        <div class="login-card-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none"><path d="M6.5 10V7.5a5.5 5.5 0 0 1 11 0V10M5.5 10h13v9h-13z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 13.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        </div>
-        <h1 id="login-heading">Sign in</h1>
+        <div class="login-eyebrow">YUKI / DASHBOARD</div>
+        <h1 id="login-heading">Welcome back.</h1>
+        <p class="login-description">Your servers. Your settings. All in one place.</p>
         <a class="button button-dark login-button" id="login-button" href="/dashboard/login">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="M19.7 5.5A17 17 0 0 0 15.5 4l-.5 1.1a15.7 15.7 0 0 0-6 0L8.5 4a17 17 0 0 0-4.2 1.5C1.6 9.4.9 13.2 1.2 17a17.2 17.2 0 0 0 5.2 2.6l1.1-1.8a11.2 11.2 0 0 1-1.7-.8l.4-.3a12.2 12.2 0 0 0 11.6 0l.4.3c-.6.3-1.1.6-1.7.8l1.1 1.8a17.2 17.2 0 0 0 5.2-2.6c.4-4.4-.7-8.2-3.1-11.5ZM8.5 14.6c-.9 0-1.6-.8-1.6-1.8s.7-1.8 1.6-1.8 1.6.8 1.6 1.8-.7 1.8-1.6 1.8Zm7 0c-.9 0-1.6-.8-1.6-1.8s.7-1.8 1.6-1.8 1.6.8 1.6 1.8-.7 1.8-1.6 1.8Z"/></svg>
-          Continue with Discord
+          Sign in with Discord
         </a>
         <div class="login-unavailable" id="login-unavailable" hidden>Discord sign-in isn’t configured. Set <code>DISCORD_CLIENT_ID</code>, <code>DISCORD_CLIENT_SECRET</code>, and <code>DISCORD_REDIRECT_URI</code> in Render.</div>
       </div>
