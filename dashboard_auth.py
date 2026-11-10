@@ -527,6 +527,19 @@ class _Dashboard:
         self._delete_cookie(response, self.state_cookie)
         return response
 
+    async def bot_profile(self, _request):
+        """Expose only Yuki's public Discord avatar for the sign-in backdrop."""
+        user = getattr(self.context.client, "user", None)
+        avatar = getattr(user, "display_avatar", None)
+        url = str(getattr(avatar, "url", "") or "")
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme != "https" or parsed.hostname not in ("cdn.discordapp.com", "media.discordapp.net"):
+                url = ""
+        except ValueError:
+            url = ""
+        return web.json_response({"avatar_url": url or None})
+
     async def me(self, request):
         if not self.config:
             return web.json_response({"authenticated": False, "user": None, "csrf": None,
@@ -727,6 +740,7 @@ def setup_dashboard(app, context):
     app.router.add_get("/dashboard/callback", dashboard.callback)
     app.router.add_post("/dashboard/logout", dashboard.logout)
     app.router.add_get("/dashboard/api/me", dashboard.me)
+    app.router.add_get("/dashboard/api/bot-profile", dashboard.bot_profile)
     app.router.add_get("/dashboard/api/statistics", dashboard.statistics)
     app.router.add_get("/dashboard/api/guilds", dashboard.guilds)
     app.router.add_get("/dashboard/api/guilds/{guild_id}", dashboard.snapshot)
