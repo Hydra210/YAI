@@ -4,7 +4,8 @@
   const $ = (id) => document.getElementById(id);
   const state = {
     user: null, csrf: null, guilds: [], guildId: null, snapshot: null,
-    sectionId: null, baseline: new Map(), drafts: new Map(), busy: false,
+    statistics: [], statisticsTotal: 0, statisticsLoading: false, statisticsError: null,
+    activeView: 'server', sectionId: null, baseline: new Map(), drafts: new Map(), busy: false,
     loading: false, alert: null, loadError: null, requestId: 0
   };
   const svgNS = 'http://www.w3.org/2000/svg';
@@ -158,7 +159,7 @@
       $('account-area').hidden = false;
       $('app-shell').hidden = false;
       $('logout-button').disabled = !state.csrf;
-      await loadGuilds();
+      await Promise.all([loadGuilds(), loadStatistics()]);
     } catch (error) {
       const area = $('initial-state');
       area.hidden = false;
@@ -181,6 +182,26 @@
       login.href = '/dashboard/login';
       login.removeAttribute('aria-disabled');
       login.removeAttribute('tabindex');
+    }
+  }
+  async function loadStatistics() {
+    state.statisticsLoading = true;
+    state.statisticsError = null;
+    render();
+    try {
+      const data = await request('/dashboard/api/statistics');
+      if (!data || !Array.isArray(data.guilds) || !Number.isInteger(data.total) || data.total !== data.guilds.length) {
+        throw new Error('The server returned an incomplete bot server overview. Please try again.');
+      }
+      state.statistics = data.guilds
+        .filter((guild) => guild && guild.id != null)
+        .map((guild) => ({ ...guild, id: String(guild.id) }));
+      state.statisticsTotal = data.total;
+    } catch (error) {
+      state.statisticsError = errorMessage(error);
+    } finally {
+      state.statisticsLoading = false;
+      render();
     }
   }
   async function loadGuilds() {
@@ -240,8 +261,17 @@
     state.guildId = id;
     loadGuild(id);
   }
+  function showStatistics() {
+    if (hasChanges() && !window.confirm('You have unsaved changes. Leave the server editor and keep them as a draft?')) return;
+    state.activeView = 'statistics';
+    state.alert = null;
+    render();
+    const headingNode = $('page-heading');
+    if (headingNode) headingNode.focus({ preventScroll: true });
+  }
   function navigate(sectionId) {
     if (state.busy) return;
+    state.activeView = 'server';
     state.sectionId = sectionId;
     state.alert = null;
     render();
@@ -251,9 +281,14 @@
   function refreshNav() {
     const nav = $('section-nav');
     nav.replaceChildren();
-    $('overview-nav').classList.toggle('active', !state.sectionId);
+    const statsNav = $('statistics-nav');
+    statsNav.classList.toggle('active', state.activeView === 'statistics');
+    statsNav.disabled = state.busy;
+    if (state.activeView === 'statistics') statsNav.setAttribute('aria-current', 'page');
+    else statsNav.removeAttribute('aria-current');
+    $('overview-nav').classList.toggle('active', state.activeView === 'server' && !state.sectionId);
     $('overview-nav').disabled = state.busy || state.loading || !state.snapshot;
-    if (!state.sectionId && state.snapshot) $('overview-nav').setAttribute('aria-current', 'page');
+    if (state.activeView === 'server' && !state.sectionId && state.snapshot) $('overview-nav').setAttribute('aria-current', 'page');
     else $('overview-nav').removeAttribute('aria-current');
     if (!state.snapshot) return;
     state.snapshot.sections.forEach((section) => {
@@ -296,6 +331,10 @@
     target.append(wrap);
     if (!state.loading && state.alert) wrap.append(alertBox(state.alert.kind, state.alert.message));
     if (!state.loading && !state.csrf) wrap.append(alertBox('warning', 'Your session is missing its security token. Editing, refreshing rules, and signing out are unavailable. Reload the page or sign in again.'));
+    if (state.activeView === 'statistics') {
+      renderStatistics(wrap);
+      return;
+    }
     if (state.loading) {
       const loading = el('div', 'loading-content');
       loading.setAttribute('role', 'status');
@@ -410,6 +449,42 @@
       });
       wrap.append(grid);
     }
+  }
+  function renderStatistics(wrap) {
+    wrap.append(breadcrumb('dashboard', 'statistics overview'));
+    wrap.append(heading('Statistics overview', 'Every server Yuki is currently in. This inventory is read-only; server settings remain limited to servers you can manage.'));
+    if (state.statisticsLoading) {
+      const loading = el('div', 'loading-content');
+      loading.setAttribute('role', 'status');
+      loading.append(el('span', 'spinner'), el('span', '', 'loading bot server statistics...'));
+      wrap.append(loading);
+      return;
+    }
+    if (state.statisticsError) {
+      wrap.append(emptyState('couldn’t load bot statistics', state.statisticsError, 'try again', loadStatistics));
+      return;
+    }
+    const summary = el('div', 'panel statistics-summary');
+    summary.append(el('div', 'small-label', 'TOTAL SERVERS'), el('div', 'statistics-total', String(state.statisticsTotal)));
+    wrap.append(summary);
+    const title = el('div', 'overview-title');
+    title.append(el('h2', '', 'All servers'));
+    wrap.append(title);
+    if (!state.statistics.length) {
+      wrap.append(emptyState('Yuki isn’t in any servers yet', 'When Yuki joins a Discord server, it will appear here.'));
+      return;
+    }
+    const list = el('div', 'panel statistics-list');
+    state.statistics.forEach((guild) => {
+      const row = el('div', 'statistics-row');
+      const avatar = el('span', 'statistics-avatar avatar');
+      setAvatar(avatar, guild.name, guild.icon_url);
+      const copyNode = el('div', 'statistics-copy');
+      copyNode.append(el('strong', '', guild.name || 'Unnamed server'), el('span', '', 'Yuki is a member'));
+      row.append(avatar, copyNode, el('span', 'statistics-readonly', 'read only'));
+      list.append(row);
+    });
+    wrap.append(list);
   }
   function renderSection(wrap, section) {
     const page = heading(section.title || String(section.id), section.description || 'Manage the settings in this section.');
@@ -772,6 +847,7 @@
   }
   $('server-select').addEventListener('change', selectGuild);
   $('overview-nav').addEventListener('click', () => navigate(null));
+  $('statistics-nav').addEventListener('click', showStatistics);
   $('logout-button').addEventListener('click', logout);
   window.addEventListener('beforeunload', (event) => {
     if (!hasChanges()) return;
