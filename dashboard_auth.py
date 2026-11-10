@@ -362,9 +362,11 @@ class _Dashboard:
             raise _Forbidden() from None
         except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError):
             raise _Unavailable() from None
-        except Exception:
-            # Including malformed/unexpected cached bot state: always deny.
-            log.warning("dashboard guild authorization failed (%s)", "invalid state")
+        except Exception as exc:
+            # Keep the denial fail-closed, but retain a traceback so unexpected
+            # Discord/cache state can be diagnosed without logging user tokens.
+            log.exception("dashboard guild authorization failed (unexpected %s)",
+                          type(exc).__name__)
             raise _Unavailable() from None
 
     async def _identity_and_guilds(self, request):
