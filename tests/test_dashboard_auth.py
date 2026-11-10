@@ -636,3 +636,24 @@ async def test_failing_live_channel_lookup_fails_closed(env):
         raise RuntimeError("Discord unavailable")
     env.client.guild.fetch_channels = fail
     assert (await env.http.get("/dashboard/api/guilds/123")).status == 503
+
+
+@pytest.mark.asyncio
+async def test_statistics_lists_every_bot_guild_without_granting_dashboard_access(env):
+    await login(env)
+    other = Guild()
+    other.id = 456
+    other.name = "Read-only server"
+    env.client.guilds.append(other)
+    # This user has no OAuth-listed guilds, so the editable selector stays empty.
+    env.stub.guilds.clear()
+
+    response = await env.http.get("/dashboard/api/statistics")
+    assert response.status == 200
+    data = await response.json()
+    assert data["total"] == 2
+    assert {guild["id"] for guild in data["guilds"]} == {"123", "456"}
+
+    editable = await env.http.get("/dashboard/api/guilds")
+    assert editable.status == 200
+    assert (await editable.json())["guilds"] == []
