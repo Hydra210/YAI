@@ -3,7 +3,7 @@
 
   const $ = (id) => document.getElementById(id);
   const state = {
-    user: null, csrf: null, guilds: [], guildId: null, snapshot: null,
+    user: null, csrf: null, guilds: [], guildId: null, snapshot: null, botAvatarUrl: null,
     statistics: [], statisticsTotal: 0, statisticsLoading: false, statisticsError: null,
     activeView: 'server', sectionId: null, baseline: new Map(), drafts: new Map(), busy: false,
     loading: false, alert: null, loadError: null, requestId: 0
@@ -154,6 +154,7 @@
         return;
       }
       state.user = me.user || {};
+      await loadBotAvatar();
       state.csrf = typeof me.csrf === 'string' && me.csrf ? me.csrf : null;
       $('account-name').textContent = state.user.username || 'Discord user';
       setAvatar($('account-avatar'), state.user.username, state.user.avatar_url);
@@ -184,6 +185,49 @@
       login.removeAttribute('aria-disabled');
       login.removeAttribute('tabindex');
     }
+  }
+  async function loadBotAvatar() {
+    try {
+      const profile = await request('/dashboard/api/bot-profile');
+      if (!profile || typeof profile.avatar_url !== 'string') return;
+      const url = new URL(profile.avatar_url);
+      if (url.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) {
+        state.botAvatarUrl = url.href;
+      }
+    } catch (_) {
+      // A missing bot avatar must not prevent the dashboard from loading.
+    }
+  }
+  function loadWorkspaceBackdrop(guild) {
+    const image = $('workspace-backdrop-image');
+    if (!image) return;
+    const fallback = state.botAvatarUrl;
+    const preferred = guild && typeof guild.icon_url === 'string' ? guild.icon_url : null;
+    const validDiscordImage = (value) => {
+      if (typeof value !== 'string') return null;
+      try {
+        const url = new URL(value);
+        return url.protocol === 'https:' && ['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)
+          ? url.href : null;
+      } catch (_) { return null; }
+    };
+    const primary = validDiscordImage(preferred);
+    const backup = validDiscordImage(fallback);
+    image.onload = () => image.classList.add('loaded');
+    image.onerror = () => {
+      image.classList.remove('loaded');
+      if (backup && image.dataset.fallbackTried !== 'true' && image.src !== backup) {
+        image.dataset.fallbackTried = 'true';
+        image.src = backup;
+      } else {
+        image.removeAttribute('src');
+      }
+    };
+    image.dataset.fallbackTried = 'false';
+    image.classList.remove('loaded');
+    const next = primary || backup;
+    if (next) image.src = next;
+    else image.removeAttribute('src');
   }
   async function loadLoginBackdrop() {
     const image = $('login-backdrop-image');
@@ -339,6 +383,7 @@
     $('logout-button').disabled = state.busy || !state.csrf;
     const guild = state.guilds.find((g) => g.id === state.guildId);
     setAvatar($('picker-avatar'), guild ? guild.name : '?', guild && guild.icon_url);
+    loadWorkspaceBackdrop(guild);
     refreshNav();
     const target = $('workspace-content');
     target.replaceChildren();
