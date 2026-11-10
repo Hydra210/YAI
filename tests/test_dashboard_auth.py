@@ -699,3 +699,18 @@ async def test_authorization_uses_raw_channel_endpoint_for_unknown_channel_types
     assert calls == [123]
     assert guild.channels[0].id == 777
     assert guild.channels[0].type.name == "unknown_20"
+
+
+@pytest.mark.asyncio
+async def test_bot_profile_exposes_only_a_discord_cdn_avatar(env):
+    env.client.user = SimpleNamespace(
+        display_avatar=SimpleNamespace(url="https://cdn.discordapp.com/avatars/123/avatarhash.png")
+    )
+    response = await env.dashboard.bot_profile(SimpleNamespace())
+    assert await response.json() == {
+        "avatar_url": "https://cdn.discordapp.com/avatars/123/avatarhash.png"
+    }
+
+    env.client.user.display_avatar.url = "https://example.com/tracker.png"
+    response = await env.dashboard.bot_profile(SimpleNamespace())
+    assert await response.json() == {"avatar_url": None}
