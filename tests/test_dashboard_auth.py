@@ -105,8 +105,11 @@ async def env(monkeypatch):
     async def discord_call(method, endpoint, **kw):
         stub.calls.append((method, endpoint, kw))
         if endpoint == "/oauth2/token":
-            return {"access_token": "private-oauth-access-token", "token_type": "Bearer",
-                    "expires_in": 3600, "scope": "identify guilds"}
+            if kw.get("data", {}).get("grant_type") == "refresh_token":
+                return {"access_token": "refreshed-oauth-access-token", "refresh_token": "rotated-refresh-token",
+                        "token_type": "Bearer", "expires_in": 3600}
+            return {"access_token": "private-oauth-access-token", "refresh_token": "private-refresh-token",
+                    "token_type": "Bearer", "expires_in": 3600, "scope": "identify guilds"}
         if endpoint == "/users/@me":
             if not stub.identity_valid:
                 raise auth._Unauthenticated()
@@ -232,6 +235,23 @@ async def test_login_session_is_opaque_replay_fails_and_logout_revokes(env):
     resp = await env.http.get("/dashboard/api/me")
     assert (await resp.json())["authenticated"] is False
     assert not env.dashboard.sessions
+
+
+@pytest.mark.asyncio
+async def test_session_cookie_lasts_thirty_days_and_refreshes_access_token(env):
+    await login(env)
+    token, session = next(iter(env.dashboard.sessions.items()))
+    assert session["refresh_token"] == "private-refresh-token"
+    assert session["expires"] - __import__("time").monotonic() > 29 * 24 * 60 * 60
+    session["access_expires"] = __import__("time").monotonic() - 1
+    response = await env.http.get("/dashboard/api/me")
+    data = await response.json()
+    assert data["authenticated"] is True
+    assert session["access_token"] == "refreshed-oauth-access-token"
+    assert session["refresh_token"] == "rotated-refresh-token"
+    refresh_calls = [call for call in env.stub.calls if call[1] == "/oauth2/token"
+                     and call[2].get("data", {}).get("grant_type") == "refresh_token"]
+    assert len(refresh_calls) == 1
 
 
 @pytest.mark.asyncio
