@@ -371,3 +371,38 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .workspace-backdrop img { transition: none; }
 }
+
+/* Keep the server navigation independently scrollable on desktop. */
+@media (min-width: 681px) {
+  .sidebar {
+    position: sticky;
+    top: 72px;
+    align-self: start;
+    height: calc(100vh - 72px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: #444 transparent;
+  }
+  .sidebar-inner {
+    position: static;
+    min-height: 100%;
+  }
+}
+.brand-avatar {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 9px;
+  object-fit: cover;
+  background: #242424;
+}
+@media (max-width: 680px) {
+  .sidebar {
+    position: static;
+    height: auto;
+    overflow: visible;
+  }
+  .sidebar-inner { min-height: auto; }
+}
