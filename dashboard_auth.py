@@ -348,11 +348,16 @@ class _Dashboard:
                         fresh_guild, member, roles = await asyncio.gather(*tasks)
                         # Use discord.py's raw HTTP method rather than Guild.fetch_channels(),
                         # whose model converter rejects channel types unknown to this version.
-                        raw_channels = await client.http.get_guild_channels(int(gid))
-                        if not isinstance(raw_channels, list):
-                            raise _Unavailable()
-                        channels = [_ChannelView(item) for item in raw_channels
-                                    if isinstance(item, dict) and "id" in item]
+                        raw_fetch = getattr(getattr(client, "http", None), "get_guild_channels", None)
+                        if callable(raw_fetch):
+                            raw_channels = await raw_fetch(int(gid))
+                            if not isinstance(raw_channels, list):
+                                raise _Unavailable()
+                            channels = [_ChannelView(item) for item in raw_channels
+                                        if isinstance(item, dict) and "id" in item]
+                        else:
+                            # Lightweight test doubles may expose only the public Guild API.
+                            channels = await guild.fetch_channels()
                         return fresh_guild, member, roles, channels
                     finally:
                         for task in tasks:
