@@ -47,6 +47,7 @@ LEARN_INTERVAL = int(os.getenv("LEARN_INTERVAL_SECONDS", "180"))
 LEARN_EVERY = int(os.getenv("LEARN_EVERY_MESSAGES", "80"))
 VIBE_EVERY = int(os.getenv("VIBE_EVERY_MESSAGES", "120"))
 RECENT_LIMIT = 25
+CONTEXT_STALE_AFTER_SECONDS = int(os.getenv("CONTEXT_STALE_AFTER_SECONDS", "1800"))  # 30 minutes without activity starts a new conversation
 MAX_PEOPLE = 5
 MEMORY_CHARS = 3500
 OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
@@ -1089,6 +1090,21 @@ def fmt_date(ts: int) -> str:
 def gather(scope, channel_key, msg_id, user_id, text, mentioned_ids, allow=None):
     """Collect recent chat + everything Yuki knows that's relevant. Runs in a worker thread."""
     recent = [r for r in mem.recent(channel_key, RECENT_LIMIT + 1) if r["id"] != msg_id][-RECENT_LIMIT:]
+    # Keep only the current uninterrupted conversation. Old messages remain searchable in long-term memory,
+    # but must not silently become active context after a long pause.
+    if recent:
+        now = int(time.time())
+        latest_ts = int(recent[-1].get("ts") or 0)
+        if not latest_ts or now - latest_ts > CONTEXT_STALE_AFTER_SECONDS:
+            recent = []
+        else:
+            active = [recent[-1]]
+            for row in reversed(recent[:-1]):
+                row_ts = int(row.get("ts") or 0)
+                if not row_ts or int(active[0].get("ts") or 0) - row_ts > CONTEXT_STALE_AFTER_SECONDS:
+                    break
+                active.insert(0, row)
+            recent = active
     recent_ids = {r["id"] for r in recent}
 
     people = [user_id, *mentioned_ids]
@@ -1292,8 +1308,10 @@ async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, menti
         "recent chat in this channel, oldest first:\n"
         + "\n".join(transcript)
         + f"\n\nthe last message is from {author_name} and it's aimed at you. "
-        "Use the earlier chat to understand the context before answering. "
-        "If the last line references something from earlier in the conversation, resolve that context first. "
+        "Use the earlier messages in this active conversation to understand the context before answering. "
+        "The active conversation contains only messages from the current uninterrupted session; a gap longer than the configured inactivity window starts a fresh conversation. "
+        "Do not assume an older topic is still being discussed just because it appears in long-term memory. "
+        "If the last line clearly references an older subject, you may use long-term memory to resolve that reference. "
         "Use memory of who is being rude, nice, or neutral to calibrate the response. "
         "If the person is rude to you, give a short, sharp, witty comeback. "
         "If the person is nice, be nice back. If the person is neutral, be normal. "
