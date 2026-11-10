@@ -335,3 +335,39 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .login-backdrop img { transition: none; }
 }
+
+/* Selected-server artwork behind the dashboard workspace. */
+.app-shell { background: transparent; }
+.workspace { position: relative; isolation: isolate; }
+.workspace-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at center, rgba(12, 12, 12, .58), rgba(0, 0, 0, .88)),
+    #080808;
+}
+.workspace-backdrop img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  opacity: 0;
+  filter: blur(34px) brightness(.38) saturate(.82);
+  transform: scale(1.13);
+  transition: opacity .45s ease;
+}
+.workspace-backdrop img.loaded { opacity: 1; }
+.workspace-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at center, rgba(0, 0, 0, .08) 0%, rgba(0, 0, 0, .46) 68%, rgba(0, 0, 0, .72) 100%),
+    linear-gradient(135deg, rgba(0, 0, 0, .25), rgba(0, 0, 0, .5));
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-backdrop img { transition: none; }
+}
