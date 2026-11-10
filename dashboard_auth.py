@@ -158,6 +158,36 @@ class _MemberView:
         return getattr(self._member, name)
 
 
+class _ChannelView:
+    """Small channel facade built from raw REST data, including future channel types.
+
+    discord.py raises InvalidData when Discord adds a channel type it does not
+    yet know. Authorization must not fail just because one unrelated channel
+    has a newer type; its permission overwrites still need to be evaluated.
+    """
+    def __init__(self, data):
+        self.id = int(data["id"])
+        self.name = str(data.get("name") or "")
+        raw_type = int(data.get("type", -1))
+        try:
+            self.type = discord.ChannelType(raw_type)
+        except ValueError:
+            self.type = SimpleNamespace(name=f"unknown_{raw_type}")
+        self._overwrites = {}
+        for item in data.get("permission_overwrites", ()):
+            if not isinstance(item, dict):
+                continue
+            target_id = int(item["id"])
+            target_type = int(item["type"])
+            allow = discord.Permissions(int(item.get("allow", "0")))
+            deny = discord.Permissions(int(item.get("deny", "0")))
+            self._overwrites[(target_type, target_id)] = discord.PermissionOverwrite.from_pair(allow, deny)
+
+    def overwrites_for(self, target):
+        target_type = 0 if isinstance(target, discord.Role) else 1
+        return self._overwrites.get((target_type, int(target.id)), discord.PermissionOverwrite())
+
+
 class _GuildView:
     """Guild facade with REST-fresh roles and channel permission overwrites."""
     def __init__(self, guild, roles, channels):
@@ -313,10 +343,17 @@ class _Dashboard:
                 async with self.guild_semaphore:
                     tasks = [asyncio.create_task(client.fetch_guild(int(gid))),
                              asyncio.create_task(guild.fetch_member(int(user_id))),
-                             asyncio.create_task(guild.fetch_roles()),
-                             asyncio.create_task(guild.fetch_channels())]
+                             asyncio.create_task(guild.fetch_roles())]
                     try:
-                        return await asyncio.gather(*tasks)
+                        fresh_guild, member, roles = await asyncio.gather(*tasks)
+                        # Use discord.py's raw HTTP method rather than Guild.fetch_channels(),
+                        # whose model converter rejects channel types unknown to this version.
+                        raw_channels = await client.http.get_guild_channels(int(gid))
+                        if not isinstance(raw_channels, list):
+                            raise _Unavailable()
+                        channels = [_ChannelView(item) for item in raw_channels
+                                    if isinstance(item, dict) and "id" in item]
+                        return fresh_guild, member, roles, channels
                     finally:
                         for task in tasks:
                             if not task.done():
