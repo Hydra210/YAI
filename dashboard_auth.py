@@ -308,7 +308,8 @@ class _Dashboard:
     async def _identity(self, token, session):
         try:
             self._still_valid(token, session)
-            if session.get("access_expires", 0) <= time.monotonic() + _ACCESS_TOKEN_SKEW:
+            if (session.get("refresh_token")
+                    and session.get("access_expires", 0) <= time.monotonic() + _ACCESS_TOKEN_SKEW):
                 await self._refresh_session(token, session)
             try:
                 data = await self._discord("GET", "/users/@me", headers={"Authorization": "Bearer " + session["access_token"]})
