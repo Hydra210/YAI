@@ -85,3 +85,12 @@ def test_rules_editor_has_read_only_sources_and_accessible_edit_controls():
     assert "status-pill" not in js + css
     assert "rule-status-dot" not in js + css
     assert "rule-dot" not in js + css
+
+
+def test_statistics_overview_is_separate_from_the_editable_server_picker():
+    html = (ROOT / "web/dashboard.html").read_text()
+    js = (ROOT / "web/dashboard.js").read_text()
+    assert 'id="statistics-nav"' in html
+    assert "/dashboard/api/statistics" in js
+    assert "Every server Yuki is currently in" in js
+    assert "read only" in js
