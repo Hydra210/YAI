@@ -596,6 +596,10 @@
     const options = Array.isArray(field.options) ? field.options.map((option) => ({
       value: String(option.value), label: option.label == null ? String(option.value) : String(option.label)
     })) : [];
+    const list = el('div', 'rules-list');
+    list.tabIndex = 0;
+    list.setAttribute('role', 'region');
+    list.setAttribute('aria-label', `${rules.length} server rules`);
     rules.forEach((rule, index) => {
       if (!rule || typeof rule !== 'object') return;
       const card = el('article', 'rule-card');
@@ -671,8 +675,9 @@
       categoryGroup.append(categoryLabel, categorySelect);
       controls.append(correctionGroup, guidanceGroup, categoryGroup);
       card.append(controls);
-      editor.append(card);
+      list.append(card);
     });
+    editor.append(list);
     return editor;
   }
   function updateRule(field, ruleId, property, nextValue) {
@@ -911,6 +916,20 @@
   $('overview-nav').addEventListener('click', () => navigate(null));
   $('statistics-nav').addEventListener('click', showStatistics);
   $('logout-button').addEventListener('click', logout);
+  function initCookieNotice() {
+    const banner = $('cookie-banner');
+    const accept = $('accept-cookies');
+    if (!banner || !accept) return;
+    const accepted = document.cookie.split(';').some((part) => part.trim() === 'yai_cookie_notice=accepted');
+    if (accepted) return;
+    banner.hidden = false;
+    accept.addEventListener('click', () => {
+      const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = `yai_cookie_notice=accepted; Max-Age=31536000; Path=/; SameSite=Lax${secure}`;
+      banner.hidden = true;
+    }, { once: true });
+  }
+  initCookieNotice();
   window.addEventListener('beforeunload', (event) => {
     if (!hasChanges()) return;
     event.preventDefault();
