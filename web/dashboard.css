@@ -341,12 +341,11 @@ a { color: inherit; }
 .workspace { position: relative; isolation: isolate; }
 #workspace-content { position: relative; z-index: 1; }
 .workspace-backdrop {
-  position: sticky;
-  top: 72px;
+  position: absolute;
+  inset: 0;
   z-index: 0;
-  height: calc(100vh - 72px);
-  margin-bottom: calc(-1 * (100vh - 72px));
   overflow: hidden;
+  pointer-events: none;
   background:
     radial-gradient(ellipse at center, rgba(12, 12, 12, .58), rgba(0, 0, 0, .88)),
     #080808;
@@ -403,9 +402,7 @@ a { color: inherit; }
 }
 @media (max-width: 680px) {
   .workspace-backdrop {
-    top: 62px;
-    height: calc(100vh - 62px);
-    margin-bottom: calc(-1 * (100vh - 62px));
+    inset: 0;
   }
   .sidebar {
     position: static;
