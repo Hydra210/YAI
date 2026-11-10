@@ -657,3 +657,28 @@ async def test_statistics_lists_every_bot_guild_without_granting_dashboard_acces
     editable = await env.http.get("/dashboard/api/guilds")
     assert editable.status == 200
     assert (await editable.json())["guilds"] == []
+
+
+def test_channel_view_handles_unknown_discord_channel_type_and_overwrites():
+    from unittest.mock import Mock
+
+    view = auth._ChannelView({
+        "id": "777",
+        "name": "new-channel",
+        "type": 20,
+        "permission_overwrites": [
+            {"id": "123", "type": 0, "allow": "0", "deny": str(1 << 10)},
+            {"id": "456", "type": 0, "allow": str(1 << 10), "deny": "0"},
+            {"id": "10", "type": 1, "allow": "0", "deny": str(1 << 10)},
+        ],
+    })
+    everyone = Mock(spec=discord.Role)
+    everyone.id = 123
+    member_role = Mock(spec=discord.Role)
+    member_role.id = 456
+    member = SimpleNamespace(id=10)
+
+    assert view.type.name == "unknown_20"
+    assert view.overwrites_for(everyone).view_channel is False
+    assert view.overwrites_for(member_role).view_channel is True
+    assert view.overwrites_for(member).view_channel is False
