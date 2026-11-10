@@ -94,3 +94,16 @@ def test_statistics_overview_is_separate_from_the_editable_server_picker():
     assert "/dashboard/api/statistics" in js
     assert "Every server Yuki is currently in" in js
     assert "read only" in js
+
+
+def test_sign_in_uses_yukis_blurred_avatar_backdrop_and_discord_button():
+    html = (ROOT / "web/dashboard.html").read_text()
+    css = (ROOT / "web/dashboard.css").read_text()
+    js = (ROOT / "web/dashboard.js").read_text()
+
+    assert 'id="login-backdrop-image"' in html
+    assert "login-card-icon" not in html
+    assert "Sign in with Discord" in html
+    assert "loadLoginBackdrop" in js and "/dashboard/api/bot-profile" in js
+    assert ".login-backdrop img" in css and "filter: blur(34px)" in css
+    assert "background: #5865f2" in css
