@@ -56,7 +56,7 @@ CORRUPTED_PASSWORD = os.getenv("CORRUPTED_YUKI_PASSWORD", "")
 corrupted_enabled = False  # intentionally resets to OFF every restart
 REPLY_TIMEOUT = int(os.getenv("REPLY_TIMEOUT_SECONDS", "90"))
 MAX_CONCURRENT_REPLIES = int(os.getenv("MAX_CONCURRENT_REPLIES", "4"))
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_ROUNDS = 8
 MAX_CALLS_PER_ROUND = 4
 
 # the rival: a running-joke feud. Yuki roasts him, studies how he types and copies it. Override with RIVAL_USER_IDS.
@@ -1039,6 +1039,7 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
     if not tools:
         return ((await llm_message(messages)).content or "").strip()
 
+    seen_tool_calls = set()
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
         # The final round is for a plain-text answer. Do not send tool schemas
@@ -1078,9 +1079,19 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
             ],
         })
         for i, c in enumerate(calls):
+            try:
+                parsed_args = json.loads(c.function.arguments or "{}")
+                args_key = json.dumps(parsed_args, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            except (TypeError, ValueError):
+                args_key = c.function.arguments or ""
+            call_key = (c.function.name, args_key)
             if i >= MAX_CALLS_PER_ROUND:
                 result = "skipped, too many tool calls at once"
+            elif call_key in seen_tool_calls:
+                result = "skipped, this exact tool call was already run earlier in this reply; use the existing result or try a meaningfully different query"
+                log.info("skipping repeated tool call %s(%s)", c.function.name, c.function.arguments[:120])
             else:
+                seen_tool_calls.add(call_key)
                 result = await skills.call_skill(sctx, c.function.name, c.function.arguments)
                 log.info("skill %s(%s) -> %s", c.function.name, c.function.arguments[:120], result[:140].replace("\n", " "))
             messages.append({"role": "tool", "tool_call_id": c.id, "content": result})
