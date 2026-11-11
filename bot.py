@@ -880,6 +880,14 @@ async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None,
         except NotFoundError as e:
             log.warning("%s: Groq says model %s was not found: %s", key_tag(i), use_model, str(e)[:300])
             raise
+        except Exception as e:
+            # Groq's 413 TPM response is an APIStatusError, not a BadRequestError
+            # in the SDK. Catch it here so it can actually fail over to other keys.
+            if getattr(e, "status_code", None) == 413:
+                log.warning("%s hit Groq's token-per-minute limit, trying the next key", key_tag(i))
+                last_err = e
+                continue
+            raise
     if last_err is not None and len(groq_clients) > 1:
         log.error("all %d groq keys failed, the last error was %s", len(groq_clients), type(last_err).__name__)
     raise last_err
