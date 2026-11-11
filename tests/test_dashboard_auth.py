@@ -668,6 +668,16 @@ async def test_statistics_lists_every_bot_guild_without_granting_dashboard_acces
     # This user has no OAuth-listed guilds, so the editable selector stays empty.
     env.stub.guilds.clear()
 
+    remote_only = Guild()
+    remote_only.id = 789
+    remote_only.name = "REST-only server"
+
+    async def fetch_guilds(*, limit=None):
+        assert limit is None
+        for guild in (env.client.guild, other, remote_only):
+            yield guild
+    env.client.fetch_guilds = fetch_guilds
+
     async def application_request(route):
         assert route.path == "/applications/@me"
         return {
@@ -680,8 +690,8 @@ async def test_statistics_lists_every_bot_guild_without_granting_dashboard_acces
     response = await env.http.get("/dashboard/api/statistics")
     assert response.status == 200
     data = await response.json()
-    assert data["total"] == 2
-    assert {guild["id"] for guild in data["guilds"]} == {"123", "456"}
+    assert data["total"] == 3
+    assert {guild["id"] for guild in data["guilds"]} == {"123", "456", "789"}
     assert data["discord_counts"] == {
         "guild_installs": 7,
         "user_installs": 42,
