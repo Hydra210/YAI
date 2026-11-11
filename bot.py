@@ -1048,8 +1048,8 @@ LOOK_INTENT = re.compile(
 )
 
 
-AUDIO_PROCESS_INTENT = re.compile(r"\\b(pitch|speed|speed up|slow down|faster|slower|audio|sound|volume|extract audio|2x|0\\.5x)\\b", re.I)
-IMAGE_CONVERT_INTENT = re.compile(r"\\b(convert|turn|make|save|export)\\b.{0,50}\\b(gif|png|jpe?g|webp)\\b|\\b(to|as)\\s+(?:a\\s+)?gif\\b", re.I)
+AUDIO_PROCESS_INTENT = re.compile(r"\b(pitch|speed|speed up|slow down|faster|slower|audio|sound|volume|extract audio|2x|0\.5x)\b", re.I)
+IMAGE_CONVERT_INTENT = re.compile(r"\b(convert|turn|make|save|export)\b.{0,50}\b(gif|png|jpe?g|webp)\b|\b(to|as)\s+(?:a\s+)?gif\b", re.I)
 
 
 def forced_skill(text: str, sctx) -> str | None:
