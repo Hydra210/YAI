@@ -1816,7 +1816,7 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
     policy = ping_policy(message.guild.id if message.guild else 0)
     authorized_mass = bool(message.guild and ai_staff(message.author) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
-    bubbles = [part.strip() for part in reply.split(MULTI_MESSAGE_MARKER) if part.strip()]
+    bubbles = [part.strip() for part in re.split(r"\\s*<YUKI_NEXT_MESSAGE>\\s*", reply) if part.strip()]
     parts = []
     for bubble in bubbles or [reply]:
         parts.extend(split_reply(bubble))
