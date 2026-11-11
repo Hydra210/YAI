@@ -1344,7 +1344,7 @@ async def process_audio(ctx: Ctx, speed: float = 1.0, pitch: float = 1.0):
     required=["operation"],
 )
 async def imagemagick_edit(ctx: Ctx, operation: str):
-    magick = shutil.which("magick")
+    magick = shutil.which("magick") or shutil.which("convert")
     if not magick:
         return "ImageMagick isn't installed in this runtime"
     if operation not in ("grayscale", "blur", "sharpen", "rotate90", "flip", "flop", "negate"):
