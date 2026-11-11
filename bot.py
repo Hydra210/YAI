@@ -2,6 +2,7 @@ import asyncio
 import base64
 import contextlib
 import hmac
+import hashlib
 import io
 import json
 import logging
@@ -371,6 +372,49 @@ def make_client(k: str) -> AsyncGroq:
 
 groq_clients = [make_client(k) for k in GROQ_KEYS]
 _key_cursor = 0
+# Runtime health is tracked by a hash of each key, never by the secret itself.
+_KEY_STATE: dict[str, str] = {}
+_KEY_COOLDOWNS: dict[str, float] = {}
+_KEY_STATE_LOCK = asyncio.Lock()
+MAX_KEY_ATTEMPTS = max(1, int(os.getenv("MAX_GROQ_KEY_ATTEMPTS", "4")))
+DEFAULT_RATE_LIMIT_COOLDOWN = max(10, int(os.getenv("GROQ_RATE_LIMIT_COOLDOWN_SECONDS", "60")))
+
+
+def _key_id(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _key_health(key: str) -> tuple[str, float]:
+    ident = _key_id(key)
+    return _KEY_STATE.get(ident, "unknown"), _KEY_COOLDOWNS.get(ident, 0.0)
+
+
+def _set_key_health(key: str, status: str, cooldown: float = 0.0) -> None:
+    ident = _key_id(key)
+    _KEY_STATE[ident] = status
+    if cooldown > 0:
+        _KEY_COOLDOWNS[ident] = time.time() + cooldown
+    else:
+        _KEY_COOLDOWNS.pop(ident, None)
+
+
+def _retry_after_seconds(exc) -> float:
+    headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
+    raw = headers.get("retry-after") or headers.get("x-ratelimit-reset-requests") or headers.get("x-ratelimit-reset-tokens")
+    if raw:
+        value = str(raw).strip().lower()
+        try:
+            return max(1.0, min(3600.0, float(value)))
+        except ValueError:
+            total = 0.0
+            for amount, unit in re.findall(r"(\\d+(?:\\.\\d+)?)(ms|s|m|h)", value):
+                scale = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[unit]
+                total += float(amount) * scale
+            if total:
+                return max(1.0, min(3600.0, total))
+    return float(DEFAULT_RATE_LIMIT_COOLDOWN)
+
+
 log.info("loaded %d groq key(s): %s", len(groq_clients), ", ".join(f"#{n} (...{k[-4:]})" for n, k in enumerate(GROQ_KEYS, 1)))
 
 
@@ -489,7 +533,11 @@ KEYS_HTML = r'''<!doctype html>
   function render(d) {
     $("count").replaceChildren(document.createTextNode(String(d.working)), mk("span", { textContent: " / " + d.total }));
     const age = Math.max(0, Math.round(Date.now() / 1000 - d.checked_at));
-    $("sub").textContent = "live test against " + d.model + " · " + (age < 5 ? "checked just now" : "checked " + age + "s ago") + " · rate limits / access restrictions don't mean a key is invalid";
+    const invalid = d.keys.filter(k => k.status === "invalid").length;
+    const restricted = d.keys.filter(k => k.status === "restricted").length;
+    const limited = d.keys.filter(k => k.status === "limited").length;
+    $("sub").textContent = "live test against " + d.model + " · " + (age < 5 ? "checked just now" : "checked " + age + "s ago") +
+      " · " + invalid + " invalid · " + restricted + " restricted · " + limited + " rate limited";
     $("addform").hidden = !d.editable;
     const list = $("list");
     list.replaceChildren();
@@ -558,13 +606,18 @@ _key_cache_lock = asyncio.Lock()
 
 
 async def check_key(i: int, client=None, *, key: str | None = None, source: str | None = None) -> dict:
-    """Probe the exact key/client snapshot against the configured model; never infer status from list position alone."""
+    """Probe a key only when its runtime state permits it."""
     started = time.time()
-    status = "ok"
     key = GROQ_KEYS[i] if key is None else key
     source = KEY_SOURCES[i] if source is None else source
     client = client or groq_clients[i]
     last4 = key[-4:]
+    known, until = _key_health(key)
+    if known in {"invalid", "restricted"}:
+        return {"n": i + 1, "last4": last4, "source": source, "status": known, "ms": None}
+    if until > time.time():
+        return {"n": i + 1, "last4": last4, "source": source, "status": known if known != "unknown" else "limited", "ms": None, "cooldown_s": round(until-time.time())}
+    status = "ok"
     try:
         extra = {"reasoning_effort": "low"} if MODEL.startswith("openai/gpt-oss") else {}
         await asyncio.wait_for(
@@ -594,6 +647,8 @@ async def check_key(i: int, client=None, *, key: str | None = None, source: str 
             status = "forbidden"
         else:
             status = "error"
+    if status in {"ok", "invalid", "restricted", "limited"}:
+        _set_key_health(key, status, DEFAULT_RATE_LIMIT_COOLDOWN if status == "limited" else 0)
     return {"n": i + 1, "last4": last4, "source": source, "status": status, "ms": round((time.time() - started) * 1000)}
 
 
@@ -687,19 +742,17 @@ async def key_report(fresh: bool = False) -> dict:
             # Take a stable snapshot so adding/removing another key during the probes
             # cannot make a result appear beside the wrong key number or source label.
             snapshot = list(zip(GROQ_KEYS, KEY_SOURCES, groq_clients))
-            keys = await asyncio.gather(*(
-                check_key(i, client, key=key, source=source)
-                for i, (key, source, client) in enumerate(snapshot)
-            ))
+            keys = []
+            for i, (key, source, client) in enumerate(snapshot):
+                keys.append(await check_key(i, client, key=key, source=source))
             current = list(zip(GROQ_KEYS, KEY_SOURCES, groq_clients))
             if current != snapshot:
                 # The list changed while checks were running; discard that mixed-era report
                 # and probe the current list once instead.
                 snapshot = current
-                keys = await asyncio.gather(*(
-                    check_key(i, client, key=key, source=source)
-                    for i, (key, source, client) in enumerate(snapshot)
-                ))
+                keys = []
+                for i, (key, source, client) in enumerate(snapshot):
+                    keys.append(await check_key(i, client, key=key, source=source))
             _key_cache["ts"] = time.time()
             _key_cache["data"] = {
                 "working": sum(1 for k in keys if k["status"] == "ok"),
@@ -880,68 +933,86 @@ STATS = {"started": time.time(), "last_reply": 0.0, "replies": 0, "errors": 0, "
 
 async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None, tool_choice="auto", model=None, request_delay=0.0):
     use_model = model or MODEL
-    extra = {}
-    if use_model.startswith("openai/gpt-oss"):
-        extra["reasoning_effort"] = "medium"
-    kwargs = {}
-    if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = tool_choice
+    extra = {"reasoning_effort": "medium"} if use_model.startswith("openai/gpt-oss") else {}
+    kwargs = {"tools": tools, "tool_choice": tool_choice} if tools else {}
     global _key_cursor
     last_err = None
     if request_delay > 0:
         await asyncio.sleep(request_delay)
-    for attempt in range(len(groq_clients)):
-        i = _key_cursor % len(groq_clients)
-        _key_cursor += 1
+
+    # Never sweep every key on one request. Skip keys already known to be invalid,
+    # restricted, or still inside their rate-limit cooldown.
+    now = time.time()
+    eligible = []
+    for offset in range(len(groq_clients)):
+        i = (_key_cursor + offset) % len(groq_clients)
+        state, until = _key_health(GROQ_KEYS[i])
+        if state in {"invalid", "restricted"} or until > now:
+            continue
+        eligible.append(i)
+    if not eligible:
+        disabled = sum(1 for key in GROQ_KEYS if _key_health(key)[0] in {"invalid", "restricted"})
+        raise RuntimeError(f"no Groq keys currently available ({disabled} invalid/restricted; others may be cooling down)")
+
+    attempts = min(MAX_KEY_ATTEMPTS, len(eligible))
+    for attempt, i in enumerate(eligible[:attempts]):
+        _key_cursor = (i + 1) % len(groq_clients)
+        key = GROQ_KEYS[i]
         try:
             resp = await groq_clients[i].chat.completions.create(
-                model=use_model,
-                messages=messages,
-                temperature=temperature,
-                max_completion_tokens=max_tokens,
-                extra_body=extra,
-                **kwargs,
+                model=use_model, messages=messages, temperature=temperature,
+                max_completion_tokens=max_tokens, extra_body=extra, **kwargs,
             )
+            _set_key_health(key, "ok")
             return resp.choices[0].message
         except RateLimitError as e:
-            # Give the next independent organization a moment before retrying a rate-limited request.
-            log.warning("%s was rate limited, trying the next configured key", key_tag(i))
+            cooldown = _retry_after_seconds(e)
+            _set_key_health(key, "limited", cooldown)
+            log.warning("%s rate limited; cooling down for %.0fs before reuse", key_tag(i), cooldown)
             last_err = e
-            if request_delay > 0 and attempt + 1 < len(groq_clients):
-                await asyncio.sleep(request_delay)
         except AuthenticationError as e:
-            # Invalid keys can be skipped immediately; they do not benefit from a cooldown.
-            log.warning("%s failed authentication, trying the next key", key_tag(i))
+            _set_key_health(key, "invalid")
+            log.error("%s rejected authentication and is now disabled until a dashboard recheck succeeds", key_tag(i))
             last_err = e
         except BadRequestError as e:
             status_code = getattr(e, "status_code", None)
-            if status_code == 413:
-                # A token/usage ceiling may be key/account-specific, so try the next key.
-                log.warning("%s hit Groq's request/token limit (413), trying the next key", key_tag(i))
+            if "organization_restricted" in str(e).lower():
+                _set_key_health(key, "restricted")
+                log.error("%s belongs to a restricted Groq organization and is now disabled", key_tag(i))
                 last_err = e
-                continue
-            if "organization_restricted" in str(e):
-                log.warning("%s belongs to a restricted Groq organization, trying the next key", key_tag(i))
+            elif status_code == 413:
+                cooldown = _retry_after_seconds(e)
+                _set_key_health(key, "limited", cooldown)
+                log.warning("%s hit Groq's request/token limit; cooling down for %.0fs", key_tag(i), cooldown)
                 last_err = e
-                continue
-            log.warning("%s got a non-retryable bad request from Groq (model %s, status %s): %s",
-                        key_tag(i), use_model, status_code, str(e)[:300])
-            raise
-        except NotFoundError as e:
-            log.warning("%s: Groq says model %s was not found: %s", key_tag(i), use_model, str(e)[:300])
+            else:
+                log.warning("%s got a non-retryable bad request (model %s, status %s)", key_tag(i), use_model, status_code)
+                raise
+        except NotFoundError:
             raise
         except Exception as e:
-            # Groq's 413 TPM response is an APIStatusError, not a BadRequestError
-            # in the SDK. Catch it here so it can actually fail over to other keys.
             if getattr(e, "status_code", None) == 413:
-                log.warning("%s hit Groq's token-per-minute limit, trying the next key", key_tag(i))
+                cooldown = _retry_after_seconds(e)
+                _set_key_health(key, "limited", cooldown)
+                log.warning("%s hit Groq's token-per-minute limit; cooling down for %.0fs", key_tag(i), cooldown)
                 last_err = e
-                continue
-            raise
-    if last_err is not None and len(groq_clients) > 1:
-        log.error("all %d groq keys failed, the last error was %s", len(groq_clients), type(last_err).__name__)
-    raise last_err
+            elif getattr(e, "status_code", None) == 401:
+                _set_key_health(key, "invalid")
+                log.error("%s rejected authentication and is now disabled", key_tag(i))
+                last_err = e
+            elif getattr(e, "status_code", None) == 403 and "organization_restricted" in str(e).lower():
+                _set_key_health(key, "restricted")
+                log.error("%s belongs to a restricted Groq organization and is now disabled", key_tag(i))
+                last_err = e
+            else:
+                raise
+        if request_delay > 0 and attempt + 1 < attempts:
+            await asyncio.sleep(request_delay)
+
+    if last_err is not None:
+        log.error("Groq request exhausted its %d-key attempt cap; last error: %s", attempts, type(last_err).__name__)
+        raise last_err
+    raise RuntimeError("no eligible Groq keys were available")
 
 
 async def llm(messages, *, temperature=1.0, max_tokens=1024) -> str:
