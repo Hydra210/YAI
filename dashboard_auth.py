@@ -617,14 +617,35 @@ class _Dashboard:
         return web.json_response({"authenticated": True, "user": user, "csrf": session["csrf"],
                                   "oauth_configured": True})
 
+    async def _bot_guild_inventory(self):
+        """Fetch the complete bot-side guild list from Discord, not just gateway cache."""
+        client = self.context.client
+        fetch_guilds = getattr(client, "fetch_guilds", None)
+        if not callable(fetch_guilds):
+            raise _Unavailable()
+
+        async def collect():
+            inventory = {}
+            async for guild in fetch_guilds(limit=None):
+                item = _guild_info(guild)
+                inventory[item["id"]] = item
+            return list(inventory.values())
+
+        try:
+            guilds = await asyncio.wait_for(collect(), timeout=45)
+        except Exception as exc:
+            log.warning("dashboard bot guild inventory unavailable (%s)", type(exc).__name__)
+            raise _Unavailable() from None
+        guilds.sort(key=lambda guild: (guild["name"].casefold(), guild["id"]))
+        return guilds
+
     async def statistics(self, request):
         """Return the bot-wide guild inventory; this endpoint is read-only."""
         token, session = self._session(request)
         await self._identity(token, session)
         if not self._ready():
             raise _Unavailable()
-        guilds = [_guild_info(guild) for guild in list(self.context.client.guilds)]
-        guilds.sort(key=lambda guild: (guild["name"].casefold(), guild["id"]))
+        guilds = await self._bot_guild_inventory()
         install_counts = await self._application_install_counts()
         self._still_valid(token, session)
         return web.json_response({"total": len(guilds), "guilds": guilds,
