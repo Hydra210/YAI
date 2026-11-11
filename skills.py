@@ -312,7 +312,7 @@ TRIGGERS = {
         r"\b(gif|png|jpe?g|webp|convert|resize|compress|shrink|enlarge|image|img|pic|picture|photo|"
         r"file ?size|dimensions?|resolution|memes?|caption|rate|rating|roast|look at|what(?:'s| is) this|"
         r"describe|judge|score this|audio|video|ffmpeg|imagemagick|mp3|wav|m4a|ogg|flac|"
-        r"pitch|speed up|slow down|2x|document|text file|create a file|edit a file|make a file|"
+        r"pitch|speed up|slow down|2x|document|text file|create a file|edit a file|make a file|create files?|edit files?|"
         r"markdown|\.txt|\.md|\.json|\.csv)\b",
         re.I,
     ),
@@ -1312,7 +1312,7 @@ async def process_audio(ctx: Ctx, speed: float = 1.0, pitch: float = 1.0):
     stem = _safe_output_name(Path(att.filename or "audio").stem, "audio")
     filters = ["aresample=48000"]
     if pitch != 1.0:
-        filters += [f"asetrate=48000*{pitch:.6f}", "aresample=48000", f"atempo={1.0 / pitch:.6f}"]
+        filters += [f"asetrate={int(round(48000 * pitch))}", "aresample=48000", f"atempo={1.0 / pitch:.6f}"]
     if speed != 1.0:
         filters.append(f"atempo={speed:.6f}")
     with tempfile.TemporaryDirectory(prefix="yuki-media-") as tmp:
