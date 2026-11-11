@@ -58,6 +58,9 @@ REPLY_TIMEOUT = int(os.getenv("REPLY_TIMEOUT_SECONDS", "90"))
 MAX_CONCURRENT_REPLIES = int(os.getenv("MAX_CONCURRENT_REPLIES", "4"))
 MAX_TOOL_ROUNDS = 16
 MAX_CALLS_PER_ROUND = 4
+RESEARCH_REQUEST_DELAY_SECONDS = max(0.0, float(os.getenv("RESEARCH_REQUEST_DELAY_SECONDS", "3")))
+MAX_RESEARCH_ROUNDS = max(1, int(os.getenv("MAX_RESEARCH_ROUNDS", "3")))
+RESEARCH_SKILL_NAMES = {"web_search", "fetch_url"}
 MULTI_MESSAGE_MARKER = "\n<YUKI_NEXT_MESSAGE>\n"
 MULTI_MESSAGE_RE = re.compile(r"<\s*YUKI_NEXT_MESSAGE\s*>|\[\[\s*YUKI_NEXT_MESSAGE\s*\]\]", re.I)
 NO_REPLY_MARKER = "[[YUKI_NO_REPLY]]"
@@ -846,7 +849,7 @@ channel_waiting: dict[int, int] = {}
 STATS = {"started": time.time(), "last_reply": 0.0, "replies": 0, "errors": 0, "timeouts": 0}
 
 
-async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None, tool_choice="auto", model=None):
+async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None, tool_choice="auto", model=None, request_delay=0.0):
     use_model = model or MODEL
     extra = {}
     if use_model.startswith("openai/gpt-oss"):
@@ -857,7 +860,9 @@ async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None,
         kwargs["tool_choice"] = tool_choice
     global _key_cursor
     last_err = None
-    for _ in range(len(groq_clients)):
+    if request_delay > 0:
+        await asyncio.sleep(request_delay)
+    for attempt in range(len(groq_clients)):
         i = _key_cursor % len(groq_clients)
         _key_cursor += 1
         try:
@@ -870,9 +875,15 @@ async def llm_message(messages, *, temperature=1.0, max_tokens=1024, tools=None,
                 **kwargs,
             )
             return resp.choices[0].message
-        except (RateLimitError, AuthenticationError) as e:
-            # A key can be temporarily limited or invalid. Retry the same request with the next configured key.
-            log.warning("%s failed: %s, trying the next key", key_tag(i), type(e).__name__)
+        except RateLimitError as e:
+            # Give the next independent organization a moment before retrying a rate-limited request.
+            log.warning("%s was rate limited, trying the next configured key", key_tag(i))
+            last_err = e
+            if request_delay > 0 and attempt + 1 < len(groq_clients):
+                await asyncio.sleep(request_delay)
+        except AuthenticationError as e:
+            # Invalid keys can be skipped immediately; they do not benefit from a cooldown.
+            log.warning("%s failed authentication, trying the next key", key_tag(i))
             last_err = e
         except BadRequestError as e:
             status_code = getattr(e, "status_code", None)
@@ -1076,12 +1087,18 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
         return ((await llm_message(messages)).content or "").strip()
 
     seen_tool_calls = set()
+    research_started = False
+    research_rounds = 0
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
-        # The final round is for a plain-text answer. Do not send tool schemas
-        # with tool_choice="none": Groq can still emit a tool call and reject it.
+        research_limit_reached = research_rounds >= MAX_RESEARCH_ROUNDS
+        # After the research-round budget is used, make one final plain-text request.
+        # Normal (non-research) tool workflows retain the existing overall round limit.
         choice = "auto"
-        round_tools = [] if last else tools
+        round_tools = [] if last or research_limit_reached else tools
+        request_delay = RESEARCH_REQUEST_DELAY_SECONDS if research_started else 0.0
+        if research_limit_reached and not last:
+            log.info("research round limit reached (%d); requesting final answer", MAX_RESEARCH_ROUNDS)
         if force and round_no == 0:
             only = [t for t in tools if t["function"]["name"] == force]
             if only:
@@ -1089,14 +1106,14 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
                 log.info("forcing skill %s", force)
         try:
             try:
-                msg = await llm_message(messages, temperature=0.7, max_tokens=1500, tools=round_tools, tool_choice=choice)
+                msg = await llm_message(messages, temperature=0.7, max_tokens=1500, tools=round_tools, tool_choice=choice, request_delay=request_delay)
             except BadRequestError as e:
                 if getattr(e, "status_code", None) == 413:
                     raise
                 if round_tools is tools:
                     raise
                 log.warning("forced tool call for %s was rejected, letting the model choose instead", force)
-                msg = await llm_message(messages, temperature=0.7, max_tokens=1500, tools=tools, tool_choice="auto")
+                msg = await llm_message(messages, temperature=0.7, max_tokens=1500, tools=tools, tool_choice="auto", request_delay=request_delay)
         except BadRequestError as e:
             if getattr(e, "status_code", None) == 413:
                 raise
@@ -1104,7 +1121,7 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
             log.warning("tool call rejected by Groq (%s), retrying without tool use", e)
             # Do not send tool schemas on the recovery attempt: some models still emit
             # tool calls with tool_choice="none", which Groq rejects with another 400.
-            msg = await llm_message(messages, temperature=0.7, max_tokens=1500)
+            msg = await llm_message(messages, temperature=0.7, max_tokens=1500, request_delay=request_delay)
         calls = getattr(msg, "tool_calls", None)
         if not calls:
             return (msg.content or "").strip()
@@ -1118,6 +1135,7 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
                 for c in calls
             ],
         })
+        this_round_researched = any(c.function.name in RESEARCH_SKILL_NAMES for c in calls)
         for i, c in enumerate(calls):
             try:
                 parsed_args = json.loads(c.function.arguments or "{}")
@@ -1135,6 +1153,11 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
                 result = await skills.call_skill(sctx, c.function.name, c.function.arguments)
                 log.info("skill %s(%s) -> %s", c.function.name, c.function.arguments[:120], result[:140].replace("\n", " "))
             messages.append({"role": "tool", "tool_call_id": c.id, "content": result})
+        if this_round_researched:
+            research_started = True
+            research_rounds += 1
+            log.info("research round %d/%d completed; next Groq request delayed %.1fs",
+                     research_rounds, MAX_RESEARCH_ROUNDS, RESEARCH_REQUEST_DELAY_SECONDS)
         if sctx.expand_tools:  # model called list_skills: from now on it can call anything it has
             sctx.expand_tools = False
             have = {t["function"]["name"] for t in tools}
