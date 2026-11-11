@@ -320,10 +320,11 @@ def select_skills(text: str, ctx: Ctx) -> list[Skill]:
     if mode == "always":
         return usable
     groups = {g for g, rx in TRIGGERS.items() if rx.search(text or "")}
-    # Always let the model see web_search in auto mode. The system prompt tells it
-    # when research is warranted, so it can check unfamiliar or complex facts instead
-    # of relying on keyword triggers alone.
+    # Always expose both web_search and fetch_url in auto mode. Search results
+    # explicitly invite the model to open a result for more detail; exposing only
+    # web_search makes that follow-up an invalid tool call.
     groups.add("search")
+    groups.add("web")
     if any(is_image(a) for a in ctx.attachments):
         groups.add("media")
     groups.add("core")
