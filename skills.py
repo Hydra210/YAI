@@ -38,6 +38,7 @@ import operator
 import os
 import re
 import signal
+import shutil
 import socket
 import sys
 import tempfile
@@ -107,6 +108,43 @@ class Ctx:
     expand_tools: bool = False                         # set by list_skills: give the model every tool next round
     _image: Any = None
     _image_searched: bool = False
+    _file_attachment: Any = None
+    _file_searched: bool = False
+
+    async def find_file_attachment(self, extensions: tuple[str, ...], scan_history: bool = True):
+        if self._file_attachment is not None:
+            name = (getattr(self._file_attachment, "filename", "") or "").lower()
+            if name.endswith(extensions):
+                return self._file_attachment
+        for attachment in self.attachments:
+            name = (getattr(attachment, "filename", "") or "").lower()
+            if name.endswith(extensions):
+                self._file_attachment = attachment
+                return attachment
+        if self._file_searched:
+            return None
+        self._file_searched = True
+        if self.reply_to_id and self.channel is not None:
+            try:
+                ref = await self.channel.fetch_message(self.reply_to_id)
+                for attachment in ref.attachments:
+                    name = (getattr(attachment, "filename", "") or "").lower()
+                    if name.endswith(extensions):
+                        self._file_attachment = attachment
+                        return attachment
+            except (discord.HTTPException, AttributeError):
+                pass
+        if scan_history and self.channel is not None and hasattr(self.channel, "history"):
+            try:
+                async for message in self.channel.history(limit=12):
+                    for attachment in message.attachments:
+                        name = (getattr(attachment, "filename", "") or "").lower()
+                        if name.endswith(extensions):
+                            self._file_attachment = attachment
+                            return attachment
+            except (discord.HTTPException, AttributeError):
+                pass
+        return None
 
     @property
     def owner_ok(self) -> bool:
@@ -273,7 +311,9 @@ TRIGGERS = {
     "media": re.compile(
         r"\b(gif|png|jpe?g|webp|convert|resize|compress|shrink|enlarge|image|img|pic|picture|photo|"
         r"file ?size|dimensions?|resolution|memes?|caption|rate|rating|roast|look at|what(?:'s| is) this|"
-        r"describe|judge|score this)\b",
+        r"describe|judge|score this|audio|video|ffmpeg|imagemagick|mp3|wav|m4a|ogg|flac|"
+        r"pitch|speed up|slow down|2x|document|text file|create a file|edit a file|make a file|"
+        r"markdown|\.txt|\.md|\.json|\.csv)\b",
         re.I,
     ),
     "util": re.compile(
