@@ -1544,10 +1544,15 @@ async def fetch_public(url: str, *, max_bytes: int = MAX_FETCH_BYTES, hops: int 
                     if r.status in (403, 406, 429) and attempt < len(_BROWSER_UAS) - 1:
                         attempt += 1
                         continue
-                    if r.status in (403, 429, 503):
-                        raise ValueError(f"the site blocked me ({r.status}): it doesn't let bots read it, so tell them you can't open that one")
+                    if r.status == 429:
+                        host = (urlparse(url).hostname or "that site").removeprefix("www.")
+                        raise ValueError(f"{host} is temporarily rate-limiting automated requests; the page couldn't be retrieved right now. Tell the person what site is limiting requests and suggest trying again in a bit.")
+                    if r.status in (403, 406, 503):
+                        host = (urlparse(url).hostname or "that site").removeprefix("www.")
+                        raise ValueError(f"{host} is blocking automated page access right now; explain that you couldn't open the page and don't imply the link is broken.")
                     if r.status >= 400:
-                        raise ValueError(f"the site answered with an error ({r.status})")
+                        host = (urlparse(url).hostname or "that site").removeprefix("www.")
+                        raise ValueError(f"{host} returned an error while the page was loading; explain that the lookup failed on the site's end without repeating technical codes.")
                     ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                     if not (ctype.startswith("text/") or ctype in _TEXT_TYPES or not ctype):
                         raise ValueError(f"that link is {ctype}, not something i can read as text")
@@ -1607,7 +1612,7 @@ def _fetch_limited(ctx: Ctx) -> str | None:
     while q and now - q[0] > window:
         q.popleft()
     if len(q) >= runs:
-        return f"opening links is rate limited for this person ({runs} per {window // 60} min), tell them to chill for a bit"
+        return "the person's link-opening limit has been reached for now; explain casually that Yuki can open more links after a short wait"
     q.append(now)
     return None
 
@@ -1621,7 +1626,7 @@ def _search_limited(ctx: Ctx) -> str | None:
     while q and now - q[0] > window:
         q.popleft()
     if len(q) >= runs:
-        return f"web search is rate limited for this person ({runs} per {window // 60} min), tell them to chill for a bit"
+        return "the person's web-search limit has been reached for now; explain casually that Yuki can search again after a short wait"
     q.append(now)
     return None
 
