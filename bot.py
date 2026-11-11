@@ -407,7 +407,7 @@ def _retry_after_seconds(exc) -> float:
             return max(1.0, min(3600.0, float(value)))
         except ValueError:
             total = 0.0
-            for amount, unit in re.findall(r"(\\d+(?:\\.\\d+)?)(ms|s|m|h)", value):
+            for amount, unit in re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h)", value):
                 scale = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[unit]
                 total += float(amount) * scale
             if total:
@@ -605,7 +605,7 @@ _key_cache: dict = {"ts": 0.0, "data": None}
 _key_cache_lock = asyncio.Lock()
 
 
-async def check_key(i: int, client=None, *, key: str | None = None, source: str | None = None) -> dict:
+async def check_key(i: int, client=None, *, key: str | None = None, source: str | None = None, force: bool = False) -> dict:
     """Probe a key only when its runtime state permits it."""
     started = time.time()
     key = GROQ_KEYS[i] if key is None else key
@@ -613,9 +613,9 @@ async def check_key(i: int, client=None, *, key: str | None = None, source: str 
     client = client or groq_clients[i]
     last4 = key[-4:]
     known, until = _key_health(key)
-    if known in {"invalid", "restricted"}:
+    if not force and known in {"invalid", "restricted"}:
         return {"n": i + 1, "last4": last4, "source": source, "status": known, "ms": None}
-    if until > time.time():
+    if not force and until > time.time():
         return {"n": i + 1, "last4": last4, "source": source, "status": known if known != "unknown" else "limited", "ms": None, "cooldown_s": round(until-time.time())}
     status = "ok"
     try:
@@ -744,7 +744,7 @@ async def key_report(fresh: bool = False) -> dict:
             snapshot = list(zip(GROQ_KEYS, KEY_SOURCES, groq_clients))
             keys = []
             for i, (key, source, client) in enumerate(snapshot):
-                keys.append(await check_key(i, client, key=key, source=source))
+                keys.append(await check_key(i, client, key=key, source=source, force=fresh))
             current = list(zip(GROQ_KEYS, KEY_SOURCES, groq_clients))
             if current != snapshot:
                 # The list changed while checks were running; discard that mixed-era report
