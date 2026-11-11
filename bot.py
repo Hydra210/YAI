@@ -59,6 +59,7 @@ MAX_CONCURRENT_REPLIES = int(os.getenv("MAX_CONCURRENT_REPLIES", "4"))
 MAX_TOOL_ROUNDS = 16
 MAX_CALLS_PER_ROUND = 4
 MULTI_MESSAGE_MARKER = "\n<YUKI_NEXT_MESSAGE>\n"
+MULTI_MESSAGE_RE = re.compile(r"<\s*YUKI_NEXT_MESSAGE\s*>|\[\[\s*YUKI_NEXT_MESSAGE\s*\]\]", re.I)
 NO_REPLY_MARKER = "[[YUKI_NO_REPLY]]"
 
 # the rival: a running-joke feud. Yuki roasts him, studies how he types and copies it. Override with RIVAL_USER_IDS.
@@ -1824,7 +1825,7 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
     policy = ping_policy(message.guild.id if message.guild else 0)
     authorized_mass = bool(message.guild and ai_staff(message.author) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
-    bubbles = [part.strip() for part in re.split(r"\s*<YUKI_NEXT_MESSAGE>\s*", reply) if part.strip()]
+    bubbles = [part.strip() for part in MULTI_MESSAGE_RE.split(reply) if part.strip()]
     parts = []
     for bubble in bubbles or [reply]:
         parts.extend(split_reply(bubble))
@@ -2011,7 +2012,7 @@ async def _reply(message: discord.Message, roast: bool = False):
     if reply:
         typing_started = time.monotonic()
         async with message.channel.typing():
-            await typing_pause(len(reply.replace(MULTI_MESSAGE_MARKER, "")), typing_started)
+            await typing_pause(len(MULTI_MESSAGE_RE.sub("", reply)), typing_started)
 
     if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
         return
@@ -2021,7 +2022,7 @@ async def _reply(message: discord.Message, roast: bool = False):
     sent = await send_reply(message, reply, files)
     if sent is None:  # the edit-trick guard cancelled this answer
         return
-    stored_reply = reply.replace(MULTI_MESSAGE_MARKER, "\n")
+    stored_reply = MULTI_MESSAGE_RE.sub("\n", reply)
     await run(mem.add_message, sent.id, scope, message.channel.id, client.user.id, "yuki", stored_reply, True)
     STATS["replies"] += 1
     STATS["last_reply"] = time.time()
