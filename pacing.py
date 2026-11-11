@@ -1,4 +1,4 @@
-"""A minimum gap between the messages Yuki sends in one server (default 2 seconds).
+"""A minimum gap between the messages Yuki sends in one server or DM (default 2 seconds).
 
 pace(key) reserves the next free send slot and waits for it, so it also works when several things want to send at once
 (a reply, a moderation reminder, a slang question): they simply line up two seconds apart."""
@@ -14,7 +14,7 @@ _next_slot: dict = {}
 
 
 async def pace(key) -> None:
-    """Wait until it's okay to send another message in this server. key = guild id (None / 0 = DMs, no gap)."""
+    """Wait until it's okay to send another message in this server or DM. Use a per-DM key for private channels."""
     if not key or GAP <= 0:
         return
     now = time.monotonic()
