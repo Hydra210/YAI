@@ -1048,6 +1048,10 @@ LOOK_INTENT = re.compile(
 )
 
 
+AUDIO_PROCESS_INTENT = re.compile(r"\\b(pitch|speed|speed up|slow down|faster|slower|audio|sound|volume|extract audio|2x|0\\.5x)\\b", re.I)
+IMAGE_CONVERT_INTENT = re.compile(r"\\b(convert|turn|make|save|export)\\b.{0,50}\\b(gif|png|jpe?g|webp)\\b|\\b(to|as)\\s+(?:a\\s+)?gif\\b", re.I)
+
+
 def forced_skill(text: str, sctx) -> str | None:
     """When the request is clearly 'caption this' or 'rate this pic', make the model actually call that tool.
     Without this he sometimes just says 'done' and never calls it."""
@@ -1055,6 +1059,10 @@ def forced_skill(text: str, sctx) -> str | None:
         return None
     if MEME_INTENT.search(text or ""):
         return "make_meme"
+    if any(skills.is_audio_video(a) for a in sctx.attachments) and AUDIO_PROCESS_INTENT.search(text or ""):
+        return "process_audio"
+    if any(skills.is_image(a) for a in sctx.attachments) and IMAGE_CONVERT_INTENT.search(text or ""):
+        return "convert_image"
     if LOOK_INTENT.search(text or "") and (sctx.reply_to_id or any(skills.is_image(a) for a in sctx.attachments)):
         return "look_at_image"
     return None
@@ -1963,14 +1971,15 @@ async def _reply(message: discord.Message, roast: bool = False):
     if roast and not text:
         return
     has_image = any(skills.is_image(a) for a in message.attachments)
-    if not text and not has_image:
+    has_attachment = bool(message.attachments)
+    if not text and not has_attachment:
         await pacing.pace(message.guild.id if message.guild else None)
         if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
             return
         await message.reply("...what. i was napping")
         return
     if not text:
-        text = "(sent an image with no text)"
+        text = "(sent an image with no text)" if has_image else "(sent a file with no text)"
 
     mentioned = [
         m.id for m in message.mentions
