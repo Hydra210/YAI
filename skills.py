@@ -319,6 +319,10 @@ def select_skills(text: str, ctx: Ctx) -> list[Skill]:
     if mode == "always":
         return usable
     groups = {g for g, rx in TRIGGERS.items() if rx.search(text or "")}
+    # Always let the model see web_search in auto mode. The system prompt tells it
+    # when research is warranted, so it can check unfamiliar or complex facts instead
+    # of relying on keyword triggers alone.
+    groups.add("search")
     if any(is_image(a) for a in ctx.attachments):
         groups.add("media")
     groups.add("core")
@@ -1763,8 +1767,9 @@ async def _search_searxng(base: str, query: str, recent: bool) -> list:
 
 @skill(
     "search",
-    "Search the web for current or recent info: news, 'is that true', scores, releases, prices, anything you might not know or that changes. "
-    "Not for finding old Discord messages (that's search_memory). Read the results, then answer in your own voice and say where it came from if it matters.",
+    "Research the web when facts are current, niche, unfamiliar, technical, version-specific, about a person or topic, or when you're not confident. "
+    "Also useful for unfamiliar slang and checking claims. Not for finding old Discord messages (that's search_memory). "
+    "Read and compare the results, then answer in your own voice and identify sources when useful.",
     {
         "query": P("string", "a short search query, like you'd type into google"),
         "news": P("boolean", "true if they want recent news or what's happening right now"),
@@ -1782,18 +1787,15 @@ async def web_search(ctx: Ctx, query: str, news: bool = False):
     serper = os.getenv("SERPER_API_KEY", "").strip()
     brave = os.getenv("BRAVE_API_KEY", "").strip()
     searx = os.getenv("SEARXNG_URL", "").strip()
-    # try each backend in order until one gives results. a block (403 etc) on one just moves on to the next.
-    # keyed APIs first (reliable), then the free scrapers, then wikipedia.
+    # Tavily is the primary provider. Other configured API providers are backups;
+    # avoid HTML search scraping because shared hosting IPs are frequently blocked.
     backends = (
-        ([("google (serper)", lambda: _search_serper(serper, q, bool(news)))] if serper else [])
-        + ([("tavily", lambda: _search_tavily(key, q, bool(news)))] if key else [])
+        ([("tavily", lambda: _search_tavily(key, q, bool(news)))] if key else [])
+        + ([("google (serper)", lambda: _search_serper(serper, q, bool(news)))] if serper else [])
         + ([("brave", lambda: _search_brave(brave, q, bool(news)))] if brave else [])
         + ([("searxng", lambda: _search_searxng(searx, q, bool(news)))] if searx else [])
-    ) + [
-        ("duckduckgo", lambda: _search_ddg(q, bool(news))),
-        ("duckduckgo-lite", lambda: _search_ddg_lite(q, bool(news))),
-        ("wikipedia", lambda: _search_wikipedia(q, bool(news))),
-    ]
+        + [("wikipedia", lambda: _search_wikipedia(q, bool(news)))]
+    )
     results, source, errors = [], "", []
     for name, run in backends:
         try:
