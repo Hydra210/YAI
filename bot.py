@@ -1830,7 +1830,7 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
         everyone=authorized_mass, roles=False, users=policy["users"], replied_user=False)}
     if files:
         kwargs["files"] = to_discord_files(files)
-    gid = message.guild.id if message.guild else None
+    gid = message.guild.id if message.guild else f"dm:{message.channel.id}"
     await pacing.pace(gid)
     if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
         return None
