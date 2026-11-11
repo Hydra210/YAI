@@ -56,7 +56,7 @@ CORRUPTED_PASSWORD = os.getenv("CORRUPTED_YUKI_PASSWORD", "")
 corrupted_enabled = False  # intentionally resets to OFF every restart
 REPLY_TIMEOUT = int(os.getenv("REPLY_TIMEOUT_SECONDS", "90"))
 MAX_CONCURRENT_REPLIES = int(os.getenv("MAX_CONCURRENT_REPLIES", "4"))
-MAX_TOOL_ROUNDS = 8
+MAX_TOOL_ROUNDS = 16
 MAX_CALLS_PER_ROUND = 4
 
 # the rival: a running-joke feud. Yuki roasts him, studies how he types and copies it. Override with RIVAL_USER_IDS.
