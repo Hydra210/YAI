@@ -58,6 +58,8 @@ REPLY_TIMEOUT = int(os.getenv("REPLY_TIMEOUT_SECONDS", "90"))
 MAX_CONCURRENT_REPLIES = int(os.getenv("MAX_CONCURRENT_REPLIES", "4"))
 MAX_TOOL_ROUNDS = 16
 MAX_CALLS_PER_ROUND = 4
+MULTI_MESSAGE_MARKER = "\n<YUKI_NEXT_MESSAGE>\n"
+NO_REPLY_MARKER = "[[YUKI_NO_REPLY]]"
 
 # the rival: a running-joke feud. Yuki roasts him, studies how he types and copies it. Override with RIVAL_USER_IDS.
 RIVAL_IDS = {int(x) for x in re.split(r"[,\s]+", os.getenv("RIVAL_USER_IDS", "1520484620129402992")) if x.isdigit()}
@@ -138,6 +140,10 @@ Style rules:
 - No long essays.
 - No formal assistant tone, no professional business tone, no helper-bot phrasing.
 - Keep it natural and conversational.
+- Treat chat as a back-and-forth, not a turn-taking script where you must always get the last word.
+- If the other person has clearly ended the exchange (for example, you said bye and they said bye back), you may say nothing at all. Use the exact marker [[YUKI_NO_REPLY]] only when no reply is genuinely needed; never use it to dodge a question, request, or meaningful message.
+- Sometimes a tiny acknowledgment is more natural than a full answer. Don't add a follow-up question or another topic just to keep the conversation going.
+- You may send a thought as multiple separate Discord messages when it genuinely feels natural, like a quick follow-up or two short bubbles. Separate bubbles with the exact marker <YUKI_NEXT_MESSAGE>. Use this sparingly; most replies should still be one message. Never split a single sentence or a coherent paragraph awkwardly, and keep each bubble independently readable.
 
 Following requests (this beats your default voice):
 - When someone tells you how to talk or act with them (a tone, a persona, a language, a nickname, shorter or longer replies, a format, or something to avoid), do exactly that for them from that message on. Their explicit request wins over your default voice and the style rules above.
@@ -1502,6 +1508,8 @@ async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, menti
         reply = "i tried to get that done, but something went wrong on my end. try again in a bit"
 
     reply = re.sub(r"^\s*yuki( ai)?\s*:\s*", "", reply, flags=re.IGNORECASE)
+    if reply.strip() == NO_REPLY_MARKER:
+        return "", (list(sctx.files) if sctx else [])
     reply = fix_names(reply)
     if "@" in reply and ping_policy(scope)["users"]:  # make @names real pings
         known = {author_name.lower(): user_id}
@@ -1805,7 +1813,16 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
     policy = ping_policy(message.guild.id if message.guild else 0)
     authorized_mass = bool(message.guild and ai_staff(message.author) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
-    first, *rest = split_reply(reply)[:safety.MAX_REPLY_PARTS]
+    bubbles = [part.strip() for part in reply.split(MULTI_MESSAGE_MARKER) if part.strip()]
+    parts = []
+    for bubble in bubbles or [reply]:
+        parts.extend(split_reply(bubble))
+        if len(parts) >= safety.MAX_REPLY_PARTS:
+            break
+    parts = parts[:safety.MAX_REPLY_PARTS]
+    if not parts:
+        return None
+    first, *rest = parts
     kwargs = {"mention_author": False, "allowed_mentions": discord.AllowedMentions(
         everyone=authorized_mass, roles=False, users=policy["users"], replied_user=False)}
     if files:
@@ -1977,10 +1994,12 @@ async def _reply(message: discord.Message, roast: bool = False):
     finally:
         if status_message is not None:
             await delete_quietly(message.channel.id, status_message.id)
+    if not reply:
+        return  # Yuki chose not to add another message; the conversation is already complete
     if reply:
         typing_started = time.monotonic()
         async with message.channel.typing():
-            await typing_pause(len(reply), typing_started)  # show normal typing only after the answer is ready
+            await typing_pause(len(reply.replace(MULTI_MESSAGE_MARKER, "")), typing_started)
 
     if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
         return
@@ -1990,7 +2009,8 @@ async def _reply(message: discord.Message, roast: bool = False):
     sent = await send_reply(message, reply, files)
     if sent is None:  # the edit-trick guard cancelled this answer
         return
-    await run(mem.add_message, sent.id, scope, message.channel.id, client.user.id, "yuki", reply, True)
+    stored_reply = reply.replace(MULTI_MESSAGE_MARKER, "\n")
+    await run(mem.add_message, sent.id, scope, message.channel.id, client.user.id, "yuki", stored_reply, True)
     STATS["replies"] += 1
     STATS["last_reply"] = time.time()
 
@@ -2002,7 +2022,10 @@ async def handle_reply(message: discord.Message, roast: bool = False):
     if yuki_ban_reason(message.author.id, message.guild.id if message.guild else None):
         return
     cid = message.guild.id if message.guild else message.channel.id  # one conversation at a time per server (per chat in DMs)
-    if not roast and not is_owner(message.author.id):
+    # If Yuki is already speaking or the channel has a queue, preserve incoming messages
+    # in order rather than applying the normal per-user cooldown to an active exchange.
+    already_talking = channel_waiting.get(cid, 0) > 0
+    if not roast and not is_owner(message.author.id) and not already_talking:
         gate = reply_gate.check(message.author.id)  # too many messages too fast: ignore them for a bit
         if gate == "warn":
             with contextlib.suppress(Exception):
