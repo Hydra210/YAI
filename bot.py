@@ -456,7 +456,7 @@ KEYS_HTML = r'''<!doctype html>
     url.searchParams.delete("token");
     history.replaceState(null, "", url.pathname + url.search);
   }
-  const LABELS = { ok: "working", limited: "rate limited", invalid: "invalid key", restricted: "restricted", model: "model not found", timeout: "timed out", error: "error" };
+  const LABELS = { ok: "working", limited: "rate limited (key accepted)", invalid: "invalid key", restricted: "org restricted", forbidden: "access denied", model: "model not found", timeout: "timed out", error: "check failed" };
   const CLASS = { ok: "ok", limited: "warn", timeout: "warn" };
   const headers = () => ({ "content-type": "application/json", "x-keys-token": token });
 
@@ -486,7 +486,7 @@ KEYS_HTML = r'''<!doctype html>
   function render(d) {
     $("count").replaceChildren(document.createTextNode(String(d.working)), mk("span", { textContent: " / " + d.total }));
     const age = Math.max(0, Math.round(Date.now() / 1000 - d.checked_at));
-    $("sub").textContent = "keys working · model " + d.model + " · checked " + (age < 5 ? "just now" : age + "s ago");
+    $("sub").textContent = "live test against " + d.model + " · " + (age < 5 ? "checked just now" : "checked " + age + "s ago") + " · rate limits / access restrictions don't mean a key is invalid";
     $("addform").hidden = !d.editable;
     const list = $("list");
     list.replaceChildren();
@@ -554,12 +554,14 @@ _key_cache: dict = {"ts": 0.0, "data": None}
 _key_cache_lock = asyncio.Lock()
 
 
-async def check_key(i: int, client=None) -> dict:
-    """One tiny real request with this key (a few tokens), so 'working' means it can really answer right now."""
+async def check_key(i: int, client=None, *, key: str | None = None, source: str | None = None) -> dict:
+    """Probe the exact key/client snapshot against the configured model; never infer status from list position alone."""
     started = time.time()
     status = "ok"
+    key = GROQ_KEYS[i] if key is None else key
+    source = KEY_SOURCES[i] if source is None else source
     client = client or groq_clients[i]
-    last4, source = GROQ_KEYS[i][-4:], KEY_SOURCES[i]  # read now: the lists can change while the request is out
+    last4 = key[-4:]
     try:
         extra = {"reasoning_effort": "low"} if MODEL.startswith("openai/gpt-oss") else {}
         await asyncio.wait_for(
@@ -577,9 +579,18 @@ async def check_key(i: int, client=None) -> dict:
     except NotFoundError:
         status = "model"
     except BadRequestError as e:
-        status = "restricted" if "organization_restricted" in str(e) else "error"
+        status = "restricted" if "organization_restricted" in str(e).lower() else "error"
     except Exception as e:
-        status = "restricted" if "organization_restricted" in str(e) else "invalid" if getattr(e, "status_code", None) in (401, 403) else "error"
+        code = getattr(e, "status_code", None)
+        message = str(e).lower()
+        if "organization_restricted" in message:
+            status = "restricted"
+        elif code == 401:
+            status = "invalid"
+        elif code == 403:
+            status = "forbidden"
+        else:
+            status = "error"
     return {"n": i + 1, "last4": last4, "source": source, "status": status, "ms": round((time.time() - started) * 1000)}
 
 
@@ -668,9 +679,24 @@ async def key_report(fresh: bool = False) -> dict:
     async with _key_cache_lock:
         now = time.time()
         age = now - _key_cache["ts"]
-        # "refresh" skips the cache, but never more than once every 10 seconds
+        # "refresh" skips the cache, but never more than once every 10 seconds.
         if _key_cache["data"] is None or age >= KEYS_CACHE_SECONDS or (fresh and age >= 10):
-            keys = await asyncio.gather(*(check_key(i) for i in range(len(groq_clients))))
+            # Take a stable snapshot so adding/removing another key during the probes
+            # cannot make a result appear beside the wrong key number or source label.
+            snapshot = list(zip(GROQ_KEYS, KEY_SOURCES, groq_clients))
+            keys = await asyncio.gather(*(
+                check_key(i, client, key=key, source=source)
+                for i, (key, source, client) in enumerate(snapshot)
+            ))
+            current = list(zip(GROQ_KEYS, KEY_SOURCES, groq_clients))
+            if current != snapshot:
+                # The list changed while checks were running; discard that mixed-era report
+                # and probe the current list once instead.
+                snapshot = current
+                keys = await asyncio.gather(*(
+                    check_key(i, client, key=key, source=source)
+                    for i, (key, source, client) in enumerate(snapshot)
+                ))
             _key_cache["ts"] = time.time()
             _key_cache["data"] = {
                 "working": sum(1 for k in keys if k["status"] == "ok"),
