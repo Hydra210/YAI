@@ -238,6 +238,15 @@ class Ctx:
         return None
 
 
+AUDIO_VIDEO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".flac", ".mp4", ".mov", ".mkv", ".webm", ".m4v")
+
+
+def is_audio_video(att) -> bool:
+    ctype = (getattr(att, "content_type", None) or "").lower()
+    name = (getattr(att, "filename", "") or "").lower()
+    return ctype.startswith(("audio/", "video/")) or name.endswith(AUDIO_VIDEO_EXTS)
+
+
 def is_image(att) -> bool:
     ctype = (getattr(att, "content_type", None) or "").lower()
     name = (getattr(att, "filename", "") or "").lower()
@@ -365,7 +374,7 @@ def select_skills(text: str, ctx: Ctx) -> list[Skill]:
     # web_search makes that follow-up an invalid tool call.
     groups.add("search")
     groups.add("web")
-    if any(is_image(a) for a in ctx.attachments):
+    if any(is_image(a) or is_audio_video(a) for a in ctx.attachments):
         groups.add("media")
     groups.add("core")
     return [s for s in usable if s.group in groups]
