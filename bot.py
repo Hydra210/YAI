@@ -1059,7 +1059,9 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
         except BadRequestError as e:
             # gpt-oss sometimes emits a malformed tool call. Retry once as plain chat instead of dying.
             log.warning("tool call rejected by Groq (%s), retrying without tool use", e)
-            msg = await llm_message(messages, temperature=0.7, max_tokens=1500, tools=tools, tool_choice="none")
+            # Do not send tool schemas on the recovery attempt: some models still emit
+            # tool calls with tool_choice="none", which Groq rejects with another 400.
+            msg = await llm_message(messages, temperature=0.7, max_tokens=1500)
         calls = getattr(msg, "tool_calls", None)
         if not calls:
             return (msg.content or "").strip()
