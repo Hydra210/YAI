@@ -58,12 +58,15 @@ REPLY_TIMEOUT = int(os.getenv("REPLY_TIMEOUT_SECONDS", "90"))
 MAX_CONCURRENT_REPLIES = int(os.getenv("MAX_CONCURRENT_REPLIES", "4"))
 MAX_TOOL_ROUNDS = 16
 MAX_CALLS_PER_ROUND = 4
-RESEARCH_REQUEST_DELAY_SECONDS = max(0.0, float(os.getenv("RESEARCH_REQUEST_DELAY_SECONDS", "3")))
+RESEARCH_REQUEST_DELAY_SECONDS = max(0.0, float(os.getenv("RESEARCH_REQUEST_DELAY_SECONDS", "1")))
 MAX_RESEARCH_ROUNDS = max(1, int(os.getenv("MAX_RESEARCH_ROUNDS", "3")))
 RESEARCH_SKILL_NAMES = {"web_search", "fetch_url"}
 MULTI_MESSAGE_MARKER = "\n<YUKI_NEXT_MESSAGE>\n"
 MULTI_MESSAGE_RE = re.compile(r"<\s*YUKI_NEXT_MESSAGE\s*>|\[\[\s*YUKI_NEXT_MESSAGE\s*\]\]", re.I)
 NO_REPLY_MARKER = "[[YUKI_NO_REPLY]]"
+MIN_REPLY_LINE_CHARS = max(1, int(os.getenv("MIN_REPLY_LINE_CHARS", "8")))
+MIN_REPLY_LINES = max(2, int(os.getenv("MIN_REPLY_LINES", "8")))
+SHORT_LINE_RATIO = min(1.0, max(0.5, float(os.getenv("SHORT_LINE_RATIO", "0.8"))))
 
 # the rival: a running-joke feud. Yuki roasts him, studies how he types and copies it. Override with RIVAL_USER_IDS.
 RIVAL_IDS = {int(x) for x in re.split(r"[,\s]+", os.getenv("RIVAL_USER_IDS", "1520484620129402992")) if x.isdigit()}
@@ -1852,6 +1855,21 @@ def to_discord_files(files) -> list:
     return [discord.File(io.BytesIO(data), filename=name) for name, data in files]
 
 
+def guard_reply_lines(text: str) -> str:
+    """Stop newline flooding while leaving normal paragraphs and short lists alone."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(lines) < MIN_REPLY_LINES:
+        return text
+    short_lines = sum(len(line) < MIN_REPLY_LINE_CHARS for line in lines)
+    if short_lines / len(lines) >= SHORT_LINE_RATIO:
+        log.warning(
+            "blocked newline-flood reply (%d non-empty lines; %d shorter than %d characters)",
+            len(lines), short_lines, MIN_REPLY_LINE_CHARS,
+        )
+        return "i'm not sending a wall of tiny lines. try asking me a different way."
+    return text
+
+
 def split_reply(text: str, limit: int = 1900) -> list:
     """Cut a long reply into discord-sized pieces, preferring line / word boundaries."""
     text = text.strip() or "..."
@@ -1874,6 +1892,7 @@ async def send_reply(message: discord.Message, reply: str, files) -> discord.Mes
     policy = ping_policy(message.guild.id if message.guild else 0)
     authorized_mass = bool(message.guild and ai_staff(message.author) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
+    reply = guard_reply_lines(reply)
     bubbles = [part.strip() for part in MULTI_MESSAGE_RE.split(reply) if part.strip()]
     parts = []
     for bubble in bubbles or [reply]:
@@ -2288,6 +2307,7 @@ async def yuki_command(interaction: discord.Interaction, question: str, image: d
     policy = ping_policy(scope)
     authorized_mass = bool(interaction.guild and ai_staff(interaction.user) and policy["mass"])
     reply = clean_ai_mentions(reply, users=policy["users"], mass=authorized_mass)
+    reply = guard_reply_lines(reply)
     if not channel_policy.conversation_allowed(mem, policy_guild, interaction.channel):
         return await interaction.followup.send("i can't chat in this channel", ephemeral=True)
     first, *rest = split_reply(reply)[:safety.MAX_REPLY_PARTS]
