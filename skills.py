@@ -116,9 +116,20 @@ class Ctx:
             name = (getattr(self._file_attachment, "filename", "") or "").lower()
             if name.endswith(extensions):
                 return self._file_attachment
-        for attachment in self.attachments:
+        def matches(attachment):
             name = (getattr(attachment, "filename", "") or "").lower()
             if name.endswith(extensions):
+                return True
+            # Discord sometimes labels legitimate audio uploads with a generic or
+            # missing filename extension. For media lookups, trust its audio/video
+            # MIME type as an additional signal.
+            if extensions == MEDIA_FILE_EXTS:
+                ctype = (getattr(attachment, "content_type", None) or "").lower()
+                return ctype.startswith(("audio/", "video/"))
+            return False
+
+        for attachment in self.attachments:
+            if matches(attachment):
                 self._file_attachment = attachment
                 return attachment
         if self._file_searched:
@@ -128,8 +139,7 @@ class Ctx:
             try:
                 ref = await self.channel.fetch_message(self.reply_to_id)
                 for attachment in ref.attachments:
-                    name = (getattr(attachment, "filename", "") or "").lower()
-                    if name.endswith(extensions):
+                    if matches(attachment):
                         self._file_attachment = attachment
                         return attachment
             except (discord.HTTPException, AttributeError):
@@ -138,8 +148,7 @@ class Ctx:
             try:
                 async for message in self.channel.history(limit=12):
                     for attachment in message.attachments:
-                        name = (getattr(attachment, "filename", "") or "").lower()
-                        if name.endswith(extensions):
+                        if matches(attachment):
                             self._file_attachment = attachment
                             return attachment
             except (discord.HTTPException, AttributeError):
@@ -238,7 +247,17 @@ class Ctx:
         return None
 
 
-AUDIO_VIDEO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".flac", ".mp4", ".mov", ".mkv", ".webm", ".m4v")
+AUDIO_VIDEO_EXTS = (
+    # Audio containers and codecs commonly uploaded to Discord.
+    ".mp3", ".mp2", ".mpga", ".wav", ".wave", ".bwf", ".aif", ".aiff", ".aifc",
+    ".m4a", ".m4b", ".m4p", ".m4r", ".mp4a", ".aac", ".adts", ".ogg", ".oga",
+    ".opus", ".flac", ".fla", ".alac", ".caf", ".amr", ".awb", ".ac3", ".eac3",
+    ".dts", ".ape", ".wv", ".wma", ".asf", ".ra", ".ram", ".au", ".snd", ".tta",
+    ".tak", ".mpc", ".mka", ".3ga", ".3gp", ".mid", ".midi", ".weba",
+    # Video containers that may contain an audio stream to extract.
+    ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".mpeg", ".mpg", ".m2v",
+    ".mts", ".m2ts", ".ts", ".3g2", ".flv", ".wmv", ".vob", ".ogv",
+)
 
 
 def is_audio_video(att) -> bool:
@@ -1188,7 +1207,7 @@ async def resize_image(ctx: Ctx, width: int = None, height: int = None, scale_pe
 # ---------------------------------------------------------------- file + media workspace tools
 
 TEXT_FILE_EXTS = (".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".toml", ".ini", ".xml", ".html", ".css", ".js", ".py", ".log")
-MEDIA_FILE_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".flac", ".mp4", ".mov", ".mkv", ".webm", ".m4v")
+MEDIA_FILE_EXTS = AUDIO_VIDEO_EXTS
 IMAGE_MAGICK_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 MAX_DOCUMENT_BYTES = 100 * 1024
 MAX_MEDIA_BYTES = 25 * 1024 * 1024
@@ -1291,7 +1310,7 @@ async def _run_media_process(*args, timeout: int = 30):
 
 @skill(
     "media",
-    "Process an audio file or extract audio from a video using FFmpeg. speed changes playback speed; pitch changes pitch independently (2.0 is one octave up, 0.5 is one octave down). Returns an MP3 attachment. Only processes a user-uploaded audio/video file.",
+    "Process common audio formats (including MP3, WAV, M4A, AAC, FLAC, OGG/Opus, AIFF, WMA, ALAC, AMR, AC3 and more), or extract audio from video using FFmpeg. Detects files by extension or audio/video MIME type. speed changes playback speed; pitch changes pitch independently (2.0 is one octave up, 0.5 is one octave down). Returns an MP3 attachment. Only processes a user-uploaded audio/video file.",
     {
         "speed": P("number", "playback speed multiplier from 0.5 to 2.0; 2.0 is twice as fast"),
         "pitch": P("number", "pitch multiplier from 0.5 to 2.0; 2.0 raises pitch by one octave without changing duration"),
@@ -1317,8 +1336,13 @@ async def process_audio(ctx: Ctx, speed: float = 1.0, pitch: float = 1.0):
         return "couldn't download that media file"
     if len(raw) > MAX_MEDIA_BYTES:
         return "that media file is over the 25 MB processing limit"
-    ext = Path(att.filename or "input.bin").suffix.lower()
-    stem = _safe_output_name(Path(att.filename or "audio").stem, "audio")
+    original_name = getattr(att, "filename", "") or "audio"
+    ext = Path(original_name).suffix.lower()
+    # A few clients provide a generic filename despite a valid audio MIME type.
+    # FFmpeg probes the file contents, so use a neutral suffix in that case.
+    if ext not in MEDIA_FILE_EXTS:
+        ext = ".media"
+    stem = _safe_output_name(Path(original_name).stem, "audio")
     filters = ["aresample=48000"]
     if pitch != 1.0:
         filters += [f"asetrate={int(round(48000 * pitch))}", "aresample=48000", f"atempo={1.0 / pitch:.6f}"]
