@@ -1041,8 +1041,10 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
 
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
-        choice = "none" if last else "auto"
-        round_tools = tools
+        # The final round is for a plain-text answer. Do not send tool schemas
+        # with tool_choice="none": Groq can still emit a tool call and reject it.
+        choice = "auto"
+        round_tools = [] if last else tools
         if force and round_no == 0:
             only = [t for t in tools if t["function"]["name"] == force]
             if only:
