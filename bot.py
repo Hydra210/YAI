@@ -579,7 +579,9 @@ KEYS_HTML = r'''<!doctype html>
       if (!res.ok) return say(out.error || "couldn't add it", true);
       $("keyinput").value = "";
       say("added. status: " + (LABELS[out.status] || out.status));
-      load(true);
+      // The add endpoint already tested this key and updated the server cache.
+      // A normal load reads that cache; never force-probe every existing key.
+      load(false);
     } catch (e) {
       say("couldn't add it: " + e.message, true);
     } finally {
@@ -699,7 +701,26 @@ async def _add_key(raw: str) -> tuple[int, dict]:
         return 400, {"error": "groq says that key is invalid"}
     saved = [GROQ_KEYS[j] for j in range(len(GROQ_KEYS)) if KEY_SOURCES[j] == "saved"]
     await run(mem.fast_set, 0, "groq_keys", saved)
-    _key_cache["ts"] = 0.0
+    # Update the dashboard cache with the result we just obtained. Do not
+    # invalidate it: the browser's follow-up load must not probe every key.
+    previous = _key_cache.get("data") or {}
+    cached_keys = list(previous.get("keys") or [])
+    # Keep existing statuses and timings; append only the freshly tested key.
+    cached_keys = [
+        {**item, "n": j + 1}
+        for j, item in enumerate(cached_keys)
+        if j < idx
+    ]
+    cached_keys.append(result)
+    checked_at = time.time()
+    _key_cache["ts"] = checked_at
+    _key_cache["data"] = {
+        "working": sum(1 for item in cached_keys if item["status"] == "ok"),
+        "total": len(GROQ_KEYS),
+        "model": MODEL,
+        "checked_at": checked_at,
+        "keys": cached_keys,
+    }
     log.info("%s added from the /keys page, status: %s", key_tag(idx), result["status"])
     return 200, {"ok": True, "status": result["status"], "n": idx + 1}
 
