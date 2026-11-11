@@ -1766,17 +1766,6 @@ async def _search_searxng(base: str, query: str, recent: bool) -> list:
     return [(_clip(x.get("title")), x.get("url", ""), _clip(x.get("content"))) for x in (data.get("results") or [])[:5] if x.get("url")]
 
 
-@skill(
-    "search",
-    "Research the web when facts are current, niche, unfamiliar, technical, version-specific, about a person or topic, or when you're not confident. "
-    "Also useful for unfamiliar slang and checking claims. Not for finding old Discord messages (that's search_memory). "
-    "Read and compare the results, then answer in your own voice and identify sources when useful.",
-    {
-        "query": P("string", "a short search query, like you'd type into google"),
-        "news": P("boolean", "true if they want recent news or what's happening right now"),
-    },
-    required=["query"],
-)
 async def _show_searching_status(ctx: Ctx) -> None:
     """Swap Yuki's temporary thinking animation for the web-search animation."""
     status_message = getattr(ctx, "status_message", None)
@@ -1795,6 +1784,17 @@ async def _show_searching_status(ctx: Ctx) -> None:
         log.warning("couldn't switch to searching GIF status", exc_info=True)
 
 
+@skill(
+    "search",
+    "Research the web when facts are current, niche, unfamiliar, technical, version-specific, about a person or topic, or when you're not confident. "
+    "Also useful for unfamiliar slang and checking claims. Not for finding old Discord messages (that's search_memory). "
+    "Read and compare the results, then answer in your own voice and identify sources when useful.",
+    {
+        "query": P("string", "a short search query, like you'd type into google"),
+        "news": P("boolean", "true if they want recent news or what's happening right now"),
+    },
+    required=["query"],
+)
 async def web_search(ctx: Ctx, query: str, news: bool = False):
     q = " ".join(str(query).split())[:200]
     if not q:
