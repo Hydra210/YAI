@@ -1176,6 +1176,233 @@ async def resize_image(ctx: Ctx, width: int = None, height: int = None, scale_pe
     return _attach(ctx, out, outname, note)
 
 
+# ---------------------------------------------------------------- file + media workspace tools
+
+TEXT_FILE_EXTS = (".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".toml", ".ini", ".xml", ".html", ".css", ".js", ".py", ".log")
+MEDIA_FILE_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".flac", ".mp4", ".mov", ".mkv", ".webm", ".m4v")
+IMAGE_MAGICK_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+MAX_DOCUMENT_BYTES = 100 * 1024
+MAX_MEDIA_BYTES = 25 * 1024 * 1024
+
+
+def _safe_output_name(name: str, fallback: str = "yuki-file") -> str:
+    base = Path(str(name or fallback)).name
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("._")
+    return base[:100] or fallback
+
+
+@skill(
+    "media",
+    "Create a downloadable text/document file. Supports txt, md, json, csv, yaml, toml, ini, xml, html, css, js, py and log. The file is attached to the reply, not stored permanently on the server.",
+    {"filename": P("string", "file name including extension, e.g. notes.md"), "content": P("string", "complete text content to put in the file")},
+    required=["filename", "content"],
+)
+async def create_text_file(ctx: Ctx, filename: str, content: str):
+    name = _safe_output_name(filename)
+    ext = Path(name).suffix.lower()
+    if ext not in TEXT_FILE_EXTS:
+        return "that file type isn't enabled; use txt, md, json, csv, yaml, toml, ini, xml, html, css, js, py or log"
+    data = str(content).encode("utf-8")
+    if len(data) > MAX_DOCUMENT_BYTES:
+        return "that document is too large; the limit is 100 KB"
+    if ext == ".json":
+        try:
+            json.loads(data.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return "that JSON isn't valid yet; fix it before I create the file"
+    ctx.files.append((name, data))
+    return f"created {name}; the file is attached to the reply, not stored permanently on the server"
+
+
+@skill(
+    "media",
+    "Edit a text file the user attached or replied to. Replace the whole document with content, or replace one exact text fragment using find_text and replacement. Returns the edited file as an attachment.",
+    {
+        "content": P("string", "complete replacement document text (optional)"),
+        "find_text": P("string", "exact existing text to replace (optional)"),
+        "replacement": P("string", "replacement text (optional)"),
+    },
+)
+async def edit_text_file(ctx: Ctx, content: str = None, find_text: str = None, replacement: str = None):
+    att = await ctx.find_file_attachment(TEXT_FILE_EXTS)
+    if att is None:
+        return "attach the text file you want edited, or reply to a message containing it"
+    if att.size and att.size > MAX_DOCUMENT_BYTES:
+        return "that document is over the 100 KB editing limit"
+    try:
+        text_value = (await att.read()).decode("utf-8-sig")
+    except (discord.HTTPException, UnicodeDecodeError):
+        return "couldn't read that as a UTF-8 text file"
+    if content is not None:
+        updated = str(content)
+        note = "replaced the document contents"
+    elif find_text is not None and replacement is not None:
+        if not str(find_text):
+            return "find_text can't be empty"
+        if str(find_text) not in text_value:
+            return "couldn't find that exact text; nothing was changed"
+        updated = text_value.replace(str(find_text), str(replacement), 1)
+        note = "replaced the first matching text fragment"
+    else:
+        return "provide either the complete new content, or both find_text and replacement"
+    data = updated.encode("utf-8")
+    if len(data) > MAX_DOCUMENT_BYTES:
+        return "the edited document would exceed the 100 KB limit"
+    name = _safe_output_name(att.filename, "edited.txt")
+    if Path(name).suffix.lower() == ".json":
+        try:
+            json.loads(updated)
+        except ValueError:
+            return "the edited JSON isn't valid, so I didn't attach it"
+    ctx.files.append((name, data))
+    return f"{note} in {name}; the edited copy is attached and the original upload is unchanged"
+
+
+async def _run_media_process(*args, timeout: int = 30):
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise ValueError("media processing took too long and was stopped")
+    if proc.returncode != 0:
+        detail = stderr.decode("utf-8", "replace")[-700:].strip()
+        raise ValueError(detail or "the media tool couldn't process that file")
+    return stdout
+
+
+@skill(
+    "media",
+    "Process an audio file or extract audio from a video using FFmpeg. speed changes playback speed; pitch changes pitch independently (2.0 is one octave up, 0.5 is one octave down). Returns an MP3 attachment. Only processes a user-uploaded audio/video file.",
+    {
+        "speed": P("number", "playback speed multiplier from 0.5 to 2.0; 2.0 is twice as fast"),
+        "pitch": P("number", "pitch multiplier from 0.5 to 2.0; 2.0 raises pitch by one octave without changing duration"),
+    },
+)
+async def process_audio(ctx: Ctx, speed: float = 1.0, pitch: float = 1.0):
+    if not shutil.which("ffmpeg"):
+        return "FFmpeg isn't installed in this runtime"
+    try:
+        speed, pitch = float(speed), float(pitch)
+    except (TypeError, ValueError):
+        return "speed and pitch must be numbers"
+    if not math.isfinite(speed) or not math.isfinite(pitch) or not (0.5 <= speed <= 2.0) or not (0.5 <= pitch <= 2.0):
+        return "speed and pitch must each be between 0.5 and 2.0"
+    att = await ctx.find_file_attachment(MEDIA_FILE_EXTS)
+    if att is None:
+        return "attach an audio/video file or reply to a message containing one"
+    if att.size and att.size > MAX_MEDIA_BYTES:
+        return "that media file is over the 25 MB processing limit"
+    try:
+        raw = await att.read()
+    except discord.HTTPException:
+        return "couldn't download that media file"
+    if len(raw) > MAX_MEDIA_BYTES:
+        return "that media file is over the 25 MB processing limit"
+    ext = Path(att.filename or "input.bin").suffix.lower()
+    stem = _safe_output_name(Path(att.filename or "audio").stem, "audio")
+    filters = ["aresample=48000"]
+    if pitch != 1.0:
+        filters += [f"asetrate=48000*{pitch:.6f}", "aresample=48000", f"atempo={1.0 / pitch:.6f}"]
+    if speed != 1.0:
+        filters.append(f"atempo={speed:.6f}")
+    with tempfile.TemporaryDirectory(prefix="yuki-media-") as tmp:
+        src = Path(tmp) / f"input{ext}"
+        dst = Path(tmp) / "processed.mp3"
+        src.write_bytes(raw)
+        try:
+            await _run_media_process(
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(src), "-map", "0:a:0", "-vn", "-t", "180",
+                "-af", ",".join(filters), "-codec:a", "libmp3lame", "-b:a", "192k",
+                str(dst), timeout=35,
+            )
+        except ValueError as exc:
+            return f"couldn't process that audio: {str(exc)[:500]}"
+        if not dst.is_file():
+            return "FFmpeg didn't produce an output file"
+        if dst.stat().st_size > ctx.file_limit:
+            return "the processed MP3 is over this server's upload limit"
+        output = dst.read_bytes()
+    ctx.files.append((f"{stem}_processed.mp3", output))
+    return f"processed {att.filename}: speed {speed:g}x, pitch {pitch:g}x. the MP3 is attached"
+
+
+@skill(
+    "media",
+    "Apply a safe preset ImageMagick operation to a user-uploaded still image: grayscale, blur, sharpen, rotate 90 degrees, flip, flop, or negate. Does not accept shell commands or arbitrary ImageMagick options.",
+    {"operation": P("string", "one of grayscale, blur, sharpen, rotate90, flip, flop, negate", enum=["grayscale", "blur", "sharpen", "rotate90", "flip", "flop", "negate"])},
+    required=["operation"],
+)
+async def imagemagick_edit(ctx: Ctx, operation: str):
+    magick = shutil.which("magick")
+    if not magick:
+        return "ImageMagick isn't installed in this runtime"
+    if operation not in ("grayscale", "blur", "sharpen", "rotate90", "flip", "flop", "negate"):
+        return "choose a supported ImageMagick preset"
+    att = await ctx.find_file_attachment(IMAGE_MAGICK_EXTS)
+    if att is None:
+        att = await ctx.find_image()
+    if att is None:
+        return "attach an image or reply to a message containing one"
+    if att.size and att.size > MAX_IMAGE_BYTES:
+        return "that image is over the 15 MB processing limit"
+    try:
+        raw = await att.read()
+    except discord.HTTPException:
+        return "couldn't download that image"
+    if len(raw) > MAX_IMAGE_BYTES:
+        return "that image is over the 15 MB processing limit"
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(io.BytesIO(raw)) as im:
+            if getattr(im, "n_frames", 1) != 1 or im.width * im.height > MAX_IMAGE_PIXELS:
+                return "ImageMagick preset editing currently supports still images up to 40 megapixels"
+    except Exception:
+        return "couldn't read that as a supported raster image"
+    ext = Path(att.filename or "image.png").suffix.lower()
+    if ext not in IMAGE_MAGICK_EXTS:
+        return "that image format isn't supported by this ImageMagick tool"
+    with tempfile.TemporaryDirectory(prefix="yuki-image-") as tmp:
+        src = Path(tmp) / ("input" + ext)
+        dst = Path(tmp) / "output.png"
+        src.write_bytes(raw)
+        args = [magick, str(src)]
+        if operation == "grayscale":
+            args += ["-colorspace", "Gray"]
+        elif operation == "blur":
+            args += ["-blur", "0x2"]
+        elif operation == "sharpen":
+            args += ["-sharpen", "0x1"]
+        elif operation == "rotate90":
+            args += ["-rotate", "90"]
+        elif operation == "flip":
+            args += ["-flip"]
+        elif operation == "flop":
+            args += ["-flop"]
+        elif operation == "negate":
+            args += ["-negate"]
+        args += ["-strip", str(dst)]
+        try:
+            await _run_media_process(*args, timeout=20)
+        except ValueError as exc:
+            return f"ImageMagick couldn't process that image: {str(exc)[:400]}"
+        if not dst.is_file():
+            return "ImageMagick didn't produce an output image"
+        output = dst.read_bytes()
+    stem = _safe_output_name(Path(att.filename or "image").stem, "image")
+    return _attach(ctx, output, f"{stem}_{operation}.png", "")
+
+
 # ---------------------------------------------------------------- memes + seeing images
 
 
