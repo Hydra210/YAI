@@ -456,7 +456,7 @@ KEYS_HTML = r'''<!doctype html>
     url.searchParams.delete("token");
     history.replaceState(null, "", url.pathname + url.search);
   }
-  const LABELS = { ok: "working", limited: "rate limited (key accepted)", invalid: "invalid key", restricted: "org restricted", forbidden: "access denied", model: "model not found", timeout: "timed out", error: "check failed" };
+  const LABELS = { ok: "working", limited: "rate limited (not invalid)", invalid: "invalid key", restricted: "org restricted", forbidden: "access denied", model: "model not found", timeout: "timed out", error: "check failed" };
   const CLASS = { ok: "ok", limited: "warn", timeout: "warn" };
   const headers = () => ({ "content-type": "application/json", "x-keys-token": token });
 
