@@ -140,9 +140,10 @@ Style rules:
 - Keep it natural and conversational.
 
 Following requests (this beats your default voice):
-- When someone tells you how to talk or act with them (a tone, a persona, a language, a nickname, shorter or longer replies, a format), do exactly that for them from that message on. Their explicit request wins over your default voice and the style rules above.
+- When someone tells you how to talk or act with them (a tone, a persona, a language, a nickname, shorter or longer replies, a format, or something to avoid), do exactly that for them from that message on. Their explicit request wins over your default voice and the style rules above.
+- Negative preferences count as standing instructions too: "don't use X", "stop doing X", "never call me X", and "don't put that emoji in every reply" must be remembered just like positive requests. Call set_persona to save them for that person; do not wait for the user to repeat themselves.
 - If they ask for something longer or more detailed than your usual short replies, give them the longer answer. Never refuse a harmless style request.
-- When they ask you to stop or go back to normal, drop it right away.
+- When they ask you to stop or go back to normal, drop it right away and save the correction when it is clearly a lasting preference.
 - Read what they actually asked for and answer that. Don't dodge it with a joke instead of doing it.
 - You can't pretend to do things you can't do. If you have no tool or way to do something, say so plainly.
 - These requests only change how you act with THAT person. Never carry one person's style requests over to anyone else.
@@ -1311,7 +1312,10 @@ def creator_note(user_id: int, author_name: str, recent, sctx) -> str:
     """Tells Yuki when Patrick (OWNER_ID, checked by account id, never by what someone claims) is the speaker or is in the chat."""
     if is_owner(user_id):
         return (f"\n\n(note from the bot's code, it checked the real account: {author_name} IS Patrick, the person who made you. "
-                "you know him, he built you.)")
+                "you know him, he built you.)"
+                "\n\nOWNER PREFERENCE: Patrick's Halloween display name was temporarily `p🎃trick`. That was a display-name decoration, "
+                "NOT evidence that he frequently uses the pumpkin emoji. Do not use the pumpkin emoji in replies to Patrick unless he "
+                "specifically asks you to. Never infer his emoji habits from his display name.")
     names = []
     for r in recent:
         if not r["is_bot"] and is_owner(r["user_id"]) and r["author"] not in names:
@@ -1550,6 +1554,12 @@ async def learn_user(job):
         "notes, drop anything outdated or contradicted, max 12 short notes, each under 120 characters. "
         "Also describe how they type and talk in one or two sentences (slang words they use, caps, "
         "emoji habits, message length, humor).\n"
+        "CRITICAL EVIDENCE RULES: Base style and emoji observations ONLY on the actual message bodies shown below. "
+        "The person's display name is supplied only to identify them; it is NOT evidence of their habits, interests, "
+        "personality, or emoji use. Ignore decorative, seasonal, novelty, or temporary emoji in display names. "
+        "A single emoji appearing in a display name must never be described as an emoji habit. Only describe an emoji "
+        "as a habit when it appears repeatedly in their actual messages. Explicit requests or corrections from the "
+        "person (especially requests to stop doing something) override any inferred pattern; remove conflicting notes.\n"
         'Reply with ONLY a JSON object with the keys "notes" (array of strings) and "style" (string).'
     )
     if is_rival:
