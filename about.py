@@ -12,7 +12,7 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.7.0"
+VERSION = "1.18.7.1"
 VERSION_DATE = "2026-11-10"
 VERSION_NOTE = "dashboard polish and persistent sign-in"
 
