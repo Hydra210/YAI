@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {
     user: null, csrf: null, guilds: [], guildId: null, snapshot: null, botAvatarUrl: null,
-    statistics: [], statisticsTotal: 0, statisticsLoading: false, statisticsError: null,
+    statistics: [], statisticsTotal: 0, statisticsDiscordCounts: {}, statisticsLoading: false, statisticsError: null,
     activeView: 'server', sectionId: null, baseline: new Map(), drafts: new Map(), busy: false,
     loading: false, alert: null, loadError: null, requestId: 0
   };
@@ -258,6 +258,8 @@
         .filter((guild) => guild && guild.id != null)
         .map((guild) => ({ ...guild, id: String(guild.id) }));
       state.statisticsTotal = data.total;
+      state.statisticsDiscordCounts = data.discord_counts && typeof data.discord_counts === 'object'
+        ? data.discord_counts : {};
     } catch (error) {
       state.statisticsError = errorMessage(error);
     } finally {
@@ -526,9 +528,23 @@
       wrap.append(emptyState('couldn’t load bot statistics', state.statisticsError, 'try again', loadStatistics));
       return;
     }
-    const summary = el('div', 'panel statistics-summary');
-    summary.append(el('div', 'small-label', 'TOTAL SERVERS'), el('div', 'statistics-total', String(state.statisticsTotal)));
+    const counts = state.statisticsDiscordCounts || {};
+    const metrics = [
+      { label: 'LIVE SERVER LIST', value: String(state.statisticsTotal), detail: 'Servers in Yuki’s live connection' },
+      { label: 'SERVER INSTALLS', value: Number.isInteger(counts.guild_installs) ? '~' + counts.guild_installs : '—', detail: 'Discord estimate' },
+      { label: 'USER INSTALLS', value: Number.isInteger(counts.user_installs) ? '~' + counts.user_installs : '—', detail: 'Discord estimate' }
+    ];
+    const summary = el('div', 'statistics-metrics');
+    metrics.forEach((metric) => {
+      const card = el('div', 'panel statistics-summary');
+      card.append(el('div', 'small-label', metric.label), el('div', 'statistics-total', metric.value),
+        el('div', 'statistics-detail', metric.detail));
+      summary.append(card);
+    });
     wrap.append(summary);
+    const note = el('p', 'statistics-note',
+      'Discord only provides approximate install counts, not a list of individual user installers. The server list below contains the guilds Yuki’s live connection currently knows about.');
+    wrap.append(note);
     const title = el('div', 'overview-title');
     title.append(el('h2', '', 'All servers'));
     wrap.append(title);
