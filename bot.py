@@ -10,6 +10,7 @@ import random
 import re
 import sys
 import time
+from pathlib import Path
 
 import discord
 from aiohttp import web
@@ -1904,14 +1905,32 @@ async def _reply(message: discord.Message, roast: bool = False):
     ]
 
     sctx = ctx_from_message(message)
-    started = time.monotonic()
-    async with message.channel.typing():
+    status_message = None
+    if not roast:
+        try:
+            thinking_path = Path(__file__).with_name("Media") / "thinking.gif"
+            thinking_embed = discord.Embed()
+            thinking_embed.set_image(url="attachment://thinking.gif")
+            status_message = await message.channel.send(
+                file=discord.File(thinking_path, filename="thinking.gif"),
+                embed=thinking_embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            sctx.status_message = status_message
+        except Exception:
+            log.warning("couldn't send thinking GIF status", exc_info=True)
+    try:
         reply, files = await ask_yuki(
             scope, message.channel.id, message.id,
             message.author.id, message.author.display_name, text, mentioned, sctx, unprompted=roast,
         )
-        if reply:
-            await typing_pause(len(reply), started)  # bigger reply = typing bubble stays up longer
+    finally:
+        if status_message is not None:
+            await delete_quietly(message.channel.id, status_message.id)
+    if reply:
+        typing_started = time.monotonic()
+        async with message.channel.typing():
+            await typing_pause(len(reply), typing_started)  # show normal typing only after the answer is ready
 
     if not channel_policy.conversation_allowed(mem, message.guild, message.channel):
         return
