@@ -103,6 +103,7 @@ class Ctx:
     files: list = field(default_factory=list)         # (filename, bytes) attached to the reply
     personas: Any = None                               # PersonaStore (per-person standing instructions)
     user_text: str = ""                                # what the person actually typed (used to spot pasted code)
+    status_message: Any = None                         # temporary GIF status message for the active reply
     expand_tools: bool = False                         # set by list_skills: give the model every tool next round
     _image: Any = None
     _image_searched: bool = False
@@ -1776,10 +1777,31 @@ async def _search_searxng(base: str, query: str, recent: bool) -> list:
     },
     required=["query"],
 )
+async def _show_searching_status(ctx: Ctx) -> None:
+    """Swap Yuki's temporary thinking animation for the web-search animation."""
+    status_message = getattr(ctx, "status_message", None)
+    if status_message is None:
+        return
+    path = Path(__file__).with_name("Media") / "searching_web.gif"
+    if not path.is_file():
+        log.warning("searching GIF is missing at %s", path)
+        return
+    try:
+        embed = discord.Embed()
+        embed.set_image(url="attachment://searching_web.gif")
+        await status_message.edit(
+            attachments=[discord.File(path, filename="searching_web.gif")],
+            embed=embed,
+        )
+    except Exception:
+        log.warning("couldn't switch to searching GIF status", exc_info=True)
+
+
 async def web_search(ctx: Ctx, query: str, news: bool = False):
     q = " ".join(str(query).split())[:200]
     if not q:
         return "need something to search for"
+    await _show_searching_status(ctx)
     limited = _search_limited(ctx)
     if limited:
         return limited
