@@ -1343,24 +1343,51 @@ async def process_audio(ctx: Ctx, speed: float = 1.0, pitch: float = 1.0):
     if ext not in MEDIA_FILE_EXTS:
         ext = ".media"
     stem = _safe_output_name(Path(original_name).stem, "audio")
+    # Rubber Band performs independent time-stretching and pitch-shifting with
+    # much better transient preservation than chaining multiple atempo filters.
+    # Some FFmpeg builds omit it, so retain a compatible fallback.
     filters = ["aresample=48000"]
-    if pitch != 1.0:
-        filters += [f"asetrate={int(round(48000 * pitch))}", "aresample=48000", f"atempo={1.0 / pitch:.6f}"]
-    if speed != 1.0:
-        filters.append(f"atempo={speed:.6f}")
+    if speed != 1.0 or pitch != 1.0:
+        filters.append(f"rubberband=tempo={speed:.6f}:pitch={pitch:.6f}")
     with tempfile.TemporaryDirectory(prefix="yuki-media-") as tmp:
         src = Path(tmp) / f"input{ext}"
         dst = Path(tmp) / "processed.mp3"
         src.write_bytes(raw)
-        try:
+
+        async def encode(audio_filter: str):
             await _run_media_process(
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(src), "-map", "0:a:0", "-vn", "-t", "180",
-                "-af", ",".join(filters), "-codec:a", "libmp3lame", "-b:a", "192k",
-                str(dst), timeout=35,
+                "-af", audio_filter, "-codec:a", "libmp3lame", "-b:a", "192k",
+                str(dst), timeout=60,
             )
+
+        try:
+            await encode(",".join(filters))
         except ValueError as exc:
-            return f"couldn't process that audio: {str(exc)[:500]}"
+            detail = str(exc)
+            if "rubberband" not in detail.lower() or "no such filter" not in detail.lower():
+                return f"couldn't process that audio: {detail[:500]}"
+
+            # Fallback: change pitch by resampling, then correct duration with
+            # one combined tempo ratio. Split extreme ratios into supported
+            # atempo stages to avoid abrupt artifacts at the filter limits.
+            fallback = ["aresample=48000"]
+            if pitch != 1.0:
+                fallback += [f"asetrate={int(round(48000 * pitch))}", "aresample=48000"]
+            tempo = speed / pitch
+            while tempo < 0.5:
+                fallback.append("atempo=0.5")
+                tempo /= 0.5
+            while tempo > 2.0:
+                fallback.append("atempo=2.0")
+                tempo /= 2.0
+            if abs(tempo - 1.0) > 1e-6:
+                fallback.append(f"atempo={tempo:.6f}")
+            try:
+                await encode(",".join(fallback))
+            except ValueError as fallback_exc:
+                return f"couldn't process that audio: {str(fallback_exc)[:500]}"
         if not dst.is_file():
             return "FFmpeg didn't produce an output file"
         if dst.stat().st_size > ctx.file_limit:
