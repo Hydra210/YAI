@@ -1787,11 +1787,9 @@ async def _show_searching_status(ctx: Ctx) -> None:
         log.warning("searching GIF is missing at %s", path)
         return
     try:
-        embed = discord.Embed()
-        embed.set_image(url="attachment://searching_web.gif")
         await status_message.edit(
             attachments=[discord.File(path, filename="searching_web.gif")],
-            embed=embed,
+            embed=None,
         )
     except Exception:
         log.warning("couldn't switch to searching GIF status", exc_info=True)
