@@ -1909,11 +1909,8 @@ async def _reply(message: discord.Message, roast: bool = False):
     if not roast:
         try:
             thinking_path = Path(__file__).with_name("Media") / "thinking.gif"
-            thinking_embed = discord.Embed()
-            thinking_embed.set_image(url="attachment://thinking.gif")
             status_message = await message.channel.send(
                 file=discord.File(thinking_path, filename="thinking.gif"),
-                embed=thinking_embed,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             sctx.status_message = status_message
