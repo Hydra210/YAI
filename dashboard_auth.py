@@ -361,6 +361,33 @@ class _Dashboard:
         except Exception:
             return False
 
+    async def _application_install_counts(self):
+        """Read Discord's aggregate install estimates from the current application."""
+        http = getattr(self.context.client, "http", None)
+        request = getattr(http, "request", None)
+        if not callable(request):
+            return {}
+        try:
+            data = await asyncio.wait_for(
+                request(discord.http.Route("GET", "/applications/@me")),
+                timeout=_TIMEOUT,
+            )
+        except Exception as exc:
+            log.warning("dashboard application install counts unavailable (%s)", type(exc).__name__)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        counts = {}
+        for source, target in (
+            ("approximate_guild_count", "guild_installs"),
+            ("approximate_user_install_count", "user_installs"),
+            ("approximate_user_authorization_count", "user_authorizations"),
+        ):
+            value = data.get(source)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                counts[target] = value
+        return counts
+
     async def _authorized(self, gid, user_id, oauth_guild):
         """Fetch live membership, roles and channel overwrites for settings access."""
         if not self._ready():
@@ -598,8 +625,10 @@ class _Dashboard:
             raise _Unavailable()
         guilds = [_guild_info(guild) for guild in list(self.context.client.guilds)]
         guilds.sort(key=lambda guild: (guild["name"].casefold(), guild["id"]))
+        install_counts = await self._application_install_counts()
         self._still_valid(token, session)
-        return web.json_response({"total": len(guilds), "guilds": guilds})
+        return web.json_response({"total": len(guilds), "guilds": guilds,
+                                  "discord_counts": install_counts})
 
     async def guilds(self, request):
         session, ids = await self._identity_and_guilds(request)
