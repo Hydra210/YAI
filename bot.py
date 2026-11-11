@@ -628,8 +628,9 @@ async def check_key(i: int, client=None, *, key: str | None = None, source: str 
         )
     except asyncio.TimeoutError:
         status = "timeout"
-    except RateLimitError:
+    except RateLimitError as e:
         status = "limited"
+        probe_cooldown = _retry_after_seconds(e)
     except AuthenticationError:
         status = "invalid"
     except NotFoundError:
@@ -648,7 +649,7 @@ async def check_key(i: int, client=None, *, key: str | None = None, source: str 
         else:
             status = "error"
     if status in {"ok", "invalid", "restricted", "limited"}:
-        _set_key_health(key, status, DEFAULT_RATE_LIMIT_COOLDOWN if status == "limited" else 0)
+        _set_key_health(key, status, locals().get("probe_cooldown", DEFAULT_RATE_LIMIT_COOLDOWN) if status == "limited" else 0)
     return {"n": i + 1, "last4": last4, "source": source, "status": status, "ms": round((time.time() - started) * 1000)}
 
 
