@@ -12,12 +12,19 @@ so if a feature isn't listed he'll say he doesn't know about it rather than gues
 
 from __future__ import annotations
 
-VERSION = "1.18.7.1"
-VERSION_DATE = "2026-11-10"
-VERSION_NOTE = "dashboard polish and persistent sign-in"
+VERSION = "1.19.11"
+VERSION_DATE = "2026-11-13"
+VERSION_NOTE = "file tools, media processing and improved reliability"
 
 # newest first. "date" may be empty if you don't know it.
 CHANGELOG = [
+    {"version": "1.19.11", "date": "2026-11-13", "title": "file tools, media processing and improved reliability",
+     "changes": [
+         "Yuki can now create and edit files, and use FFmpeg and ImageMagick for supported media tasks.",
+         "expanded audio and video attachment support, with improved processing for audio speed and pitch.",
+         "improved attachment awareness so he can recognize files already included with a message.",
+         "improved AI request handling, key management and research reliability, plus general bug fixes."
+     ]},
     {"version": "1.18.7.0", "date": "2026-11-10", "title": "dashboard polish and persistent sign-in",
      "changes": ["dashboard sign-in now keeps the session cookie for up to 30 days and refreshes Discord access tokens when a refresh token is available. a Render restart or redeploy can still end the in-memory session, so you may need to sign in again.",
                  "added a one-time cookie notice explaining the essential sign-in and security cookies; accepting it is remembered in the browser.",
