@@ -1269,9 +1269,11 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
             msg = await _plain_reply(messages, 0.0)
         return (msg.content or "").strip()
 
+    trace_id = f"{int(time.time() * 1000)}"
     seen_tool_calls = set()
     research_started = False
     research_rounds = 0
+    log.info("tool_trace=%s start available_tools=%d forced_tool=%s", trace_id, len(tools), force or "none")
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
         research_limit_reached = research_rounds >= MAX_RESEARCH_ROUNDS
@@ -1289,9 +1291,19 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
                 forced_name = force
                 log.info("forcing skill %s", force)
 
+        log.info("tool_trace=%s round=%d request tools=%d forced=%s choice=%s",
+                 trace_id, round_no + 1, len(round_tools), forced_name or "none",
+                 "forced" if forced_name else choice)
         msg = await _round_request(messages, round_tools, choice, forced_name,
                                    request_delay, all_tools=tools)
         calls = getattr(msg, "tool_calls", None)
+        if calls:
+            log.info("tool_trace=%s round=%d model_selected=%s",
+                     trace_id, round_no + 1,
+                     ",".join(call.function.name for call in calls))
+        else:
+            log.info("tool_trace=%s round=%d model_selected=NO_TOOL_CALL content_present=%s",
+                     trace_id, round_no + 1, bool((msg.content or "").strip()))
         if not round_tools:
             if calls and not (msg.content or "").strip():
                 log.warning("model called a tool on a tools-off request; asking again for plain text")
@@ -1329,9 +1341,21 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
                          (call.function.arguments or "")[:120])
             else:
                 seen_tool_calls.add(call_key)
+                started_at = time.monotonic()
+                arg_keys = ",".join(sorted(parsed_args)) if isinstance(parsed_args, dict) else "unparsed"
+                log.info("tool_trace=%s tool_start name=%s arg_fields=%s",
+                         trace_id, call.function.name, arg_keys or "none")
                 result = await skills.call_skill(sctx, call.function.name, call.function.arguments)
-                log.info("skill %s(%s) -> %s", call.function.name,
-                         (call.function.arguments or "")[:120], result[:140].replace("\n", " "))
+                elapsed_ms = round((time.monotonic() - started_at) * 1000)
+                result_text = str(result)
+                if result_text.startswith("created ") or "attached to the reply" in result_text:
+                    outcome = "success"
+                elif result_text.startswith(("bad arguments:", "skill failed", "that took too long", "there is no skill")):
+                    outcome = "failure"
+                else:
+                    outcome = "returned"
+                log.info("tool_trace=%s tool_finish name=%s outcome=%s elapsed_ms=%d",
+                         trace_id, call.function.name, outcome, elapsed_ms)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
         if this_round_researched:
