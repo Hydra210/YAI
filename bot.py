@@ -1226,24 +1226,46 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
             if only:
                 round_tools, choice = only, {"type": "function", "function": {"name": force}}
                 log.info("forcing skill %s", force)
+        forced_round = bool(force and round_no == 0 and choice != "auto")
         try:
-            try:
-                msg = await llm_message(messages, temperature=0.7, max_tokens=1500, tools=round_tools, tool_choice=choice, request_delay=request_delay)
-            except BadRequestError as e:
-                if getattr(e, "status_code", None) == 413:
-                    raise
-                if round_tools is tools:
-                    raise
-                log.warning("forced tool call for %s was rejected, letting the model choose instead", force)
-                msg = await llm_message(messages, temperature=0.7, max_tokens=1500, tools=tools, tool_choice="auto", request_delay=request_delay)
+            msg = await llm_message(
+                messages, temperature=0.7, max_tokens=1500,
+                tools=round_tools, tool_choice=choice, request_delay=request_delay,
+            )
         except BadRequestError as e:
             if getattr(e, "status_code", None) == 413:
                 raise
-            # gpt-oss sometimes emits a malformed tool call. Retry once as plain chat instead of dying.
-            log.warning("tool call rejected by Groq (%s), retrying without tool use", e)
-            # Do not send tool schemas on the recovery attempt: some models still emit
-            # tool calls with tool_choice="none", which Groq rejects with another 400.
-            msg = await llm_message(messages, temperature=0.7, max_tokens=1500, request_delay=request_delay)
+            if forced_round:
+                # A forced call can fail when the model declines the tool or the
+                # provider rejects its forced-call format. Retry with normal selection.
+                log.warning("forced call for %s was rejected; retrying with automatic tool selection", force)
+                try:
+                    msg = await llm_message(
+                        messages, temperature=0.7, max_tokens=1500,
+                        tools=tools, tool_choice="auto", request_delay=request_delay,
+                    )
+                except BadRequestError as retry_error:
+                    if getattr(retry_error, "status_code", None) == 413:
+                        raise
+                    log.warning("automatic tool retry also failed (%s); falling back to plain response", retry_error)
+                    try:
+                        msg = await llm_message(messages, temperature=0.7, max_tokens=1500, request_delay=request_delay)
+                    except BadRequestError as final_error:
+                        if getattr(final_error, "status_code", None) == 413:
+                            raise
+                        log.error("plain-response recovery failed after forced tool error: %s", final_error)
+                        return "i hit an issue processing that request on my end. try sending it again in a moment"
+            else:
+                # Do not rotate through unrelated API keys for malformed requests.
+                # One plain-chat recovery is enough; another 400 is not key-specific.
+                log.warning("tool request rejected by Groq (%s); retrying once without tools", e)
+                try:
+                    msg = await llm_message(messages, temperature=0.7, max_tokens=1500, request_delay=request_delay)
+                except BadRequestError as final_error:
+                    if getattr(final_error, "status_code", None) == 413:
+                        raise
+                    log.error("plain-response recovery failed after tool error: %s", final_error)
+                    return "i hit an issue processing that request on my end. try sending it again in a moment"
         calls = getattr(msg, "tool_calls", None)
         if not calls:
             return (msg.content or "").strip()
