@@ -2315,6 +2315,14 @@ async def _reply(message: discord.Message, roast: bool = False):
     ]
 
     sctx = ctx_from_message(message)
+    # Save incoming attachments to the sender's private temporary file space.
+    for attachment in message.attachments:
+        try:
+            payload = await attachment.read()
+            await run(mem.store_temp_file, message.author.id, attachment.filename,
+                      payload, attachment.content_type or "application/octet-stream")
+        except Exception:
+            log.exception("couldn't save incoming attachment to temporary storage")
     status_message = None
     if not roast:
         try:
