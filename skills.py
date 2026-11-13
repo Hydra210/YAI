@@ -54,6 +54,7 @@ import html as _html
 import discord
 
 import about
+import llm_recovery
 import safety
 
 try:
@@ -407,6 +408,14 @@ def _int(value, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
 
+def _usage_hint(sk: Skill) -> str:
+    if not sk.params:
+        return " (this tool takes no arguments: send {})"
+    fields = ", ".join(f"{key} ({value.get('type', 'string')}{', required' if key in sk.required else ''})"
+                       for key, value in sk.params.items())
+    return f" (fields: {fields})"
+
+
 async def call_skill(ctx: Ctx, name: str, raw_args) -> str:
     """Run one skill call from the model. Always returns a short string, never raises."""
     sk = SKILLS.get(name)
@@ -414,15 +423,19 @@ async def call_skill(ctx: Ctx, name: str, raw_args) -> str:
         return f"there is no skill called {name}. call list_skills to see what exists; if nothing fits, tell them you can't do that"
     if name == "run_python" and not ctx.python_ok:
         return "running python is turned off, so you can't do that one"
-    try:
-        args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else (raw_args or {})
-    except (json.JSONDecodeError, TypeError):
-        log.warning("skill %s received malformed JSON arguments: %r", name, str(raw_args)[:300])
-        return "bad arguments: the tool arguments must be valid JSON. Retry the tool call with a JSON object."
-    if not isinstance(args, dict):
-        log.warning("skill %s received non-object arguments (%s)", name, type(args).__name__)
-        return "bad arguments: expected a JSON object with named fields. Retry the tool call with an object."
-    args = {k: v for k, v in args.items() if k in sk.params and v is not None}
+    args, why = llm_recovery.parse_tool_args(raw_args)
+    if args is None:
+        log.warning("skill %s received malformed arguments (%s): %r", name, why, str(raw_args)[:300])
+        return f"bad arguments: {why}. Retry the tool call with a JSON object{_usage_hint(sk)}, or just answer without this tool."
+    unknown = [key for key in args if key not in sk.params]
+    if unknown:
+        log.info("skill %s: ignoring unknown arguments %s", name, unknown)
+    args, problems = llm_recovery.coerce_args(sk.params, args)
+    missing = [key for key in sk.required if key not in args]
+    if problems or missing:
+        details = problems + ([f"missing required: {', '.join(missing)}"] if missing else [])
+        log.warning("skill %s got invalid arguments: %s", name, "; ".join(details))
+        return f"bad arguments: {'; '.join(details)}. Retry the tool call with a JSON object{_usage_hint(sk)}, or just answer without this tool."
     try:
         inspect.signature(sk.fn).bind(ctx, **args)
     except TypeError as e:
