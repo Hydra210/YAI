@@ -1187,6 +1187,14 @@ AUDIO_PROCESS_INTENT = re.compile(r"\b(pitch|speed|speed up|slow down|faster|slo
 IMAGE_CONVERT_INTENT = re.compile(r"\b(convert|turn|make|save|export)\b.{0,50}\b(gif|png|jpe?g|webp)\b|\b(to|as)\s+(?:a\s+)?gif\b", re.I)
 
 
+FILE_OUTPUT_INTENT = re.compile(
+    r"\\b(?:make|create|write|save|generate|export|put)\\b.{0,100}"
+    r"\\b(?:file|document|\\.txt|\\.md|\\.json|\\.csv|\\.yaml|\\.log)\\b"
+    r"|\\b(?:file|document)\\b.{0,80}\\b(?:with|containing|of|about)\\b",
+    re.I | re.S,
+)
+
+
 def forced_skill(text: str, sctx) -> str | None:
     """When the request is clearly 'caption this' or 'rate this pic', make the model actually call that tool.
     Without this he sometimes just says 'done' and never calls it."""
@@ -1273,6 +1281,11 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
     seen_tool_calls = set()
     research_started = False
     research_rounds = 0
+    # If the person explicitly asks for a file containing researched information,
+    # don't let the model stop after searching: force the file tool as the next action.
+    file_requested = bool(FILE_OUTPUT_INTENT.search(getattr(sctx, "user_text", "") or ""))
+    file_creation_pending = False
+    file_creation_forced = False
     log.info("tool_trace=%s start available_tools=%d forced_tool=%s", trace_id, len(tools), force or "none")
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
@@ -1283,7 +1296,15 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
         if research_limit_reached and not last:
             log.info("research round limit reached (%d); requesting final answer", MAX_RESEARCH_ROUNDS)
         forced_name = None
-        if force and round_no == 0:
+        if file_creation_forced:
+            only = [tool for tool in tools if tool["function"]["name"] == "create_text_file"]
+            if only:
+                round_tools = only
+                choice = {"type": "function", "function": {"name": "create_text_file"}}
+                forced_name = "create_text_file"
+                file_creation_forced = False
+                log.info("tool_trace=%s forcing create_text_file after successful research", trace_id)
+        if force and round_no == 0 and not forced_name:
             only = [tool for tool in tools if tool["function"]["name"] == force]
             if only:
                 round_tools = only
@@ -1310,6 +1331,19 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
                 msg = await _plain_reply(messages, request_delay)
             calls = None
         if not calls:
+            if file_creation_pending and round_no < MAX_TOOL_ROUNDS:
+                file_creation_pending = False
+                file_creation_forced = True
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "The user explicitly requested a downloadable file containing the information researched "
+                        "in this conversation. You have the research results in the tool history. Call "
+                        "create_text_file now with a sensible filename and the researched information. "
+                        "Do not answer with text instead of creating the requested file."
+                    ),
+                })
+                continue
             answer = (msg.content or "").strip()
             if answer or round_no == 0 or not round_tools:
                 return answer
@@ -1326,6 +1360,8 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
             ],
         })
         this_round_researched = any(call.function.name in RESEARCH_SKILL_NAMES for call in calls)
+        research_succeeded = False
+        file_created = False
         for index, call in enumerate(calls):
             parsed_args, _why = llm_recovery.parse_tool_args(call.function.arguments)
             if parsed_args is not None:
@@ -1348,6 +1384,12 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
                 result = await skills.call_skill(sctx, call.function.name, call.function.arguments)
                 elapsed_ms = round((time.monotonic() - started_at) * 1000)
                 result_text = str(result)
+                if call.function.name in RESEARCH_SKILL_NAMES and result_text and not result_text.startswith(
+                    ("every search source failed", "couldn't open", "the person's web-search limit")
+                ):
+                    research_succeeded = True
+                if call.function.name == "create_text_file" and result_text.startswith("created "):
+                    file_created = True
                 if result_text.startswith("created ") or "attached to the reply" in result_text:
                     outcome = "success"
                 elif result_text.startswith(("bad arguments:", "skill failed", "that took too long", "there is no skill")):
@@ -1361,6 +1403,10 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
         if this_round_researched:
             research_started = True
             research_rounds += 1
+            if file_requested and research_succeeded and not file_created:
+                file_creation_pending = True
+            elif file_created:
+                file_creation_pending = False
             log.info("research round %d/%d completed; next Groq request delayed %.1fs",
                      research_rounds, MAX_RESEARCH_ROUNDS, RESEARCH_REQUEST_DELAY_SECONDS)
         if sctx.expand_tools:
