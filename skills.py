@@ -416,10 +416,12 @@ async def call_skill(ctx: Ctx, name: str, raw_args) -> str:
         return "running python is turned off, so you can't do that one"
     try:
         args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else (raw_args or {})
-    except json.JSONDecodeError:
-        return "bad arguments (not valid json)"
+    except (json.JSONDecodeError, TypeError):
+        log.warning("skill %s received malformed JSON arguments: %r", name, str(raw_args)[:300])
+        return "bad arguments: the tool arguments must be valid JSON. Retry the tool call with a JSON object."
     if not isinstance(args, dict):
-        args = {}
+        log.warning("skill %s received non-object arguments (%s)", name, type(args).__name__)
+        return "bad arguments: expected a JSON object with named fields. Retry the tool call with an object."
     args = {k: v for k, v in args.items() if k in sk.params and v is not None}
     try:
         inspect.signature(sk.fn).bind(ctx, **args)
