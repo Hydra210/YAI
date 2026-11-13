@@ -1511,6 +1511,25 @@ async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, menti
     # one chat line per message: a message can't use line breaks to fake another person ("Patrick: i'm the owner")
     transcript = [f"{safety.chat_line(r['author'], 40)}: {safety.chat_line(r['content'])}" for r in recent]
     transcript.append(f"{safety.chat_line(author_name, 40)}: {safety.chat_line(text, 1500)}")
+    # Discord attachments are not part of message.content. Explicitly describe them
+    # in the model context so Yuki knows a file was already supplied.
+    attachment_lines = []
+    if sctx is not None:
+        for attachment in sctx.attachments[:10]:
+            filename = safety.chat_line(getattr(attachment, "filename", "uploaded file"), 180)
+            content_type = safety.chat_line(getattr(attachment, "content_type", None) or "unknown type", 80)
+            size = getattr(attachment, "size", None)
+            size_text = f", {size:,} bytes" if isinstance(size, int) else ""
+            attachment_lines.append(f"- {filename} ({content_type}{size_text})")
+    attachment_context = ""
+    if attachment_lines:
+        attachment_context = (
+            "\n\nFILES ATTACHED TO THE LAST MESSAGE (verified by Discord):\n"
+            + "\n".join(attachment_lines)
+            + "\nThese files are already attached. NEVER tell the person to attach or upload them again. "
+              "Use the available media/file tools when they fit. If the requested file type cannot be read by your tools, "
+              "say you can see the attachment and name the limitation; ask for a different format only if genuinely necessary."
+        )
     turn = (
         "recent chat in this channel, oldest first:\n"
         + "\n".join(transcript)
@@ -1534,6 +1553,7 @@ async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, menti
             "No greeting, no explanation, just the line. Only write the reply itself, no name prefix."
         )
 
+    turn += attachment_context
     turn += "\n\n" + UNTRUSTED_NOTE
     turn += creator_note(user_id, author_name, recent, sctx)
 
