@@ -28,6 +28,7 @@ from groq import (
 import about
 import channel_policy
 import editguard
+import llm_recovery
 import pacing
 import safety
 import skills
@@ -1202,11 +1203,71 @@ def forced_skill(text: str, sctx) -> str | None:
     return None
 
 
-async def chat(messages, tools, sctx, force: str | None = None) -> str:
-    """One reply. With tools: let the model call bot skills for a few rounds, then force a final answer.
-    `force` = name of a skill the model must call on the first round."""
+TOOL_FAIL_REPLY = "i hit an issue processing that request on my end. try sending it again in a moment"
+
+
+class _Reply:
+    def __init__(self, content: str):
+        self.content = content
+        self.tool_calls = None
+
+
+async def _plain_reply(messages, request_delay: float):
+    plain = llm_recovery.flatten_for_plain(messages) if llm_recovery.has_tool_history(messages) else messages
+    return await llm_message(plain, temperature=0.7, max_tokens=1500, request_delay=request_delay)
+
+
+async def _round_request(messages, tools, choice, forced_name, request_delay, all_tools=None):
     if not tools:
-        return ((await llm_message(messages)).content or "").strip()
+        try:
+            return await _plain_reply(messages, request_delay)
+        except BadRequestError as error:
+            if getattr(error, "status_code", None) == 413:
+                raise
+            log.warning("tool-free request rejected by Groq: %s", str(error)[:300])
+            return _Reply(llm_recovery.salvage_text(error) or TOOL_FAIL_REPLY)
+
+    salvage = ""
+    try:
+        return await llm_message(messages, temperature=0.7, max_tokens=1500,
+                                 tools=tools, tool_choice=choice, request_delay=request_delay)
+    except BadRequestError as error:
+        if getattr(error, "status_code", None) == 413:
+            raise
+        first_error = error
+        salvage = llm_recovery.salvage_text(error)
+        kind = f"forced call for {forced_name}" if forced_name else "tool request"
+        log.warning("%s rejected by Groq (tool error: %s): %s", kind,
+                    llm_recovery.is_tool_error(error), str(error)[:300])
+
+    if llm_recovery.is_tool_error(first_error) or forced_name:
+        try:
+            return await llm_message(messages, temperature=0.3, max_tokens=1500,
+                                     tools=all_tools or tools, tool_choice="auto", request_delay=request_delay)
+        except BadRequestError as error:
+            if getattr(error, "status_code", None) == 413:
+                raise
+            salvage = llm_recovery.salvage_text(error) or salvage
+            log.warning("automatic tool retry also failed: %s", str(error)[:300])
+
+    try:
+        return await _plain_reply(messages, request_delay)
+    except BadRequestError as error:
+        if getattr(error, "status_code", None) == 413:
+            raise
+        salvage = llm_recovery.salvage_text(error) or salvage
+        log.error("plain-response recovery failed: %s", str(error)[:300])
+    return _Reply(salvage or TOOL_FAIL_REPLY)
+
+
+async def chat(messages, tools, sctx, force: str | None = None) -> str:
+    """One reply. A failed tool call should not take the whole reply down."""
+    if not tools:
+        msg = await _round_request(messages, [], "auto", None, 0.0)
+        if getattr(msg, "tool_calls", None) and not (msg.content or "").strip():
+            log.warning("model called a tool on a tools-off request; asking again for plain text")
+            msg = await _plain_reply(messages, 0.0)
+        return (msg.content or "").strip()
 
     seen_tool_calls = set()
     research_started = False
@@ -1214,98 +1275,74 @@ async def chat(messages, tools, sctx, force: str | None = None) -> str:
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
         research_limit_reached = research_rounds >= MAX_RESEARCH_ROUNDS
-        # After the research-round budget is used, make one final plain-text request.
-        # Normal (non-research) tool workflows retain the existing overall round limit.
         choice = "auto"
         round_tools = [] if last or research_limit_reached else tools
         request_delay = RESEARCH_REQUEST_DELAY_SECONDS if research_started else 0.0
         if research_limit_reached and not last:
             log.info("research round limit reached (%d); requesting final answer", MAX_RESEARCH_ROUNDS)
+        forced_name = None
         if force and round_no == 0:
-            only = [t for t in tools if t["function"]["name"] == force]
+            only = [tool for tool in tools if tool["function"]["name"] == force]
             if only:
-                round_tools, choice = only, {"type": "function", "function": {"name": force}}
+                round_tools = only
+                choice = {"type": "function", "function": {"name": force}}
+                forced_name = force
                 log.info("forcing skill %s", force)
-        forced_round = bool(force and round_no == 0 and choice != "auto")
-        try:
-            msg = await llm_message(
-                messages, temperature=0.7, max_tokens=1500,
-                tools=round_tools, tool_choice=choice, request_delay=request_delay,
-            )
-        except BadRequestError as e:
-            if getattr(e, "status_code", None) == 413:
-                raise
-            if forced_round:
-                # A forced call can fail when the model declines the tool or the
-                # provider rejects its forced-call format. Retry with normal selection.
-                log.warning("forced call for %s was rejected; retrying with automatic tool selection", force)
-                try:
-                    msg = await llm_message(
-                        messages, temperature=0.7, max_tokens=1500,
-                        tools=tools, tool_choice="auto", request_delay=request_delay,
-                    )
-                except BadRequestError as retry_error:
-                    if getattr(retry_error, "status_code", None) == 413:
-                        raise
-                    log.warning("automatic tool retry also failed (%s); falling back to plain response", retry_error)
-                    try:
-                        msg = await llm_message(messages, temperature=0.7, max_tokens=1500, request_delay=request_delay)
-                    except BadRequestError as final_error:
-                        if getattr(final_error, "status_code", None) == 413:
-                            raise
-                        log.error("plain-response recovery failed after forced tool error: %s", final_error)
-                        return "i hit an issue processing that request on my end. try sending it again in a moment"
-            else:
-                # Do not rotate through unrelated API keys for malformed requests.
-                # One plain-chat recovery is enough; another 400 is not key-specific.
-                log.warning("tool request rejected by Groq (%s); retrying once without tools", e)
-                try:
-                    msg = await llm_message(messages, temperature=0.7, max_tokens=1500, request_delay=request_delay)
-                except BadRequestError as final_error:
-                    if getattr(final_error, "status_code", None) == 413:
-                        raise
-                    log.error("plain-response recovery failed after tool error: %s", final_error)
-                    return "i hit an issue processing that request on my end. try sending it again in a moment"
+
+        msg = await _round_request(messages, round_tools, choice, forced_name,
+                                   request_delay, all_tools=tools)
         calls = getattr(msg, "tool_calls", None)
+        if not round_tools:
+            if calls and not (msg.content or "").strip():
+                log.warning("model called a tool on a tools-off request; asking again for plain text")
+                msg = await _plain_reply(messages, request_delay)
+            calls = None
         if not calls:
-            return (msg.content or "").strip()
+            answer = (msg.content or "").strip()
+            if answer or round_no == 0 or not round_tools:
+                return answer
+            return ((await _plain_reply(messages, request_delay)).content or "").strip()
 
         messages.append({
             "role": "assistant",
             "content": msg.content,
             "tool_calls": [
-                {"id": c.id, "type": "function",
-                 "function": {"name": c.function.name, "arguments": c.function.arguments}}
-                for c in calls
+                {"id": call.id, "type": "function",
+                 "function": {"name": call.function.name,
+                              "arguments": llm_recovery.normalized_args_json(call.function.arguments)}}
+                for call in calls
             ],
         })
-        this_round_researched = any(c.function.name in RESEARCH_SKILL_NAMES for c in calls)
-        for i, c in enumerate(calls):
-            try:
-                parsed_args = json.loads(c.function.arguments or "{}")
+        this_round_researched = any(call.function.name in RESEARCH_SKILL_NAMES for call in calls)
+        for index, call in enumerate(calls):
+            parsed_args, _why = llm_recovery.parse_tool_args(call.function.arguments)
+            if parsed_args is not None:
                 args_key = json.dumps(parsed_args, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            except (TypeError, ValueError):
-                args_key = c.function.arguments or ""
-            call_key = (c.function.name, args_key)
-            if i >= MAX_CALLS_PER_ROUND:
+            else:
+                args_key = call.function.arguments or ""
+            call_key = (call.function.name, args_key)
+            if index >= MAX_CALLS_PER_ROUND:
                 result = "skipped, too many tool calls at once"
             elif call_key in seen_tool_calls:
                 result = "skipped, this exact tool call was already run earlier in this reply; use the existing result or try a meaningfully different query"
-                log.info("skipping repeated tool call %s(%s)", c.function.name, c.function.arguments[:120])
+                log.info("skipping repeated tool call %s(%s)", call.function.name,
+                         (call.function.arguments or "")[:120])
             else:
                 seen_tool_calls.add(call_key)
-                result = await skills.call_skill(sctx, c.function.name, c.function.arguments)
-                log.info("skill %s(%s) -> %s", c.function.name, c.function.arguments[:120], result[:140].replace("\n", " "))
-            messages.append({"role": "tool", "tool_call_id": c.id, "content": result})
+                result = await skills.call_skill(sctx, call.function.name, call.function.arguments)
+                log.info("skill %s(%s) -> %s", call.function.name,
+                         (call.function.arguments or "")[:120], result[:140].replace("\n", " "))
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
         if this_round_researched:
             research_started = True
             research_rounds += 1
             log.info("research round %d/%d completed; next Groq request delayed %.1fs",
                      research_rounds, MAX_RESEARCH_ROUNDS, RESEARCH_REQUEST_DELAY_SECONDS)
-        if sctx.expand_tools:  # model called list_skills: from now on it can call anything it has
+        if sctx.expand_tools:
             sctx.expand_tools = False
-            have = {t["function"]["name"] for t in tools}
-            tools.extend(skills.schema(sk) for sk in skills.usable_skills(sctx) if sk.name not in have)
+            have = {tool["function"]["name"] for tool in tools}
+            tools.extend(skills.schema(skill) for skill in skills.usable_skills(sctx) if skill.name not in have)
     return ""
 
 
