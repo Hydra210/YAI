@@ -1237,25 +1237,73 @@ def _safe_output_name(name: str, fallback: str = "yuki-file") -> str:
 
 @skill(
     "media",
-    "Create a downloadable text/document file. Supports txt, md, json, csv, yaml, toml, ini, xml, html, css, js, py and log. The file is attached to the reply, not stored permanently on the server.",
-    {"filename": P("string", "file name including extension, e.g. notes.md"), "content": P("string", "complete text content to put in the file")},
+    "Create a text/document file and save it in your private temporary file storage. You can retrieve or edit it in later messages.",
+    {"filename": P("string", "file name including extension"), "content": P("string", "complete text content")},
     required=["filename", "content"],
 )
 async def create_text_file(ctx: Ctx, filename: str, content: str):
     name = _safe_output_name(filename)
-    ext = Path(name).suffix.lower()
-    if ext not in TEXT_FILE_EXTS:
-        return "that file type isn't enabled; use txt, md, json, csv, yaml, toml, ini, xml, html, css, js, py or log"
     data = str(content).encode("utf-8")
-    if len(data) > MAX_DOCUMENT_BYTES:
-        return "that document is too large; the limit is 100 KB"
-    if ext == ".json":
+    if Path(name).suffix.lower() == ".json":
         try:
             json.loads(data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            return "that JSON isn't valid yet; fix it before I create the file"
+            return "that JSON isn't valid yet; fix it before I save it"
+    file_id = await asyncio.to_thread(ctx.mem.store_temp_file, ctx.user.id, name, data, "text/plain")
     ctx.files.append((name, data))
-    return f"created {name}; the file is attached to the reply, not stored permanently on the server"
+    return f"saved {name} to your private temporary files as file ID {file_id}; it expires in 7 days and is attached here too"
+
+
+@skill("media", "List your private temporary files saved by Yuki.", {})
+async def list_saved_files(ctx: Ctx):
+    rows = await asyncio.to_thread(ctx.mem.list_temp_files, ctx.user.id)
+    if not rows:
+        return "you don't have any saved temporary files right now"
+    return "\n".join(f"ID {r['id']}: {r['filename']} ({r['size']:,} bytes; expires <t:{r['expires_at']}:R>)" for r in rows[:40])
+
+
+@skill("media", "Retrieve one of your own saved temporary files and attach it to the reply.",
+       {"file_id": P("integer", "ID from your saved file list")}, required=["file_id"])
+async def get_saved_file(ctx: Ctx, file_id: int):
+    row = await asyncio.to_thread(ctx.mem.get_temp_file, ctx.user.id, file_id)
+    if not row:
+        return "couldn't find that file in your temporary storage; it may have expired"
+    ctx.files.append((row["filename"], bytes(row["data"])))
+    return f"attached {row['filename']} from your temporary storage"
+
+
+@skill("media", "Edit one of your saved text files. Provide complete replacement content, or replace an exact text fragment.",
+       {"file_id": P("integer", "ID from your saved file list"),
+        "content": P("string", "complete replacement text (optional)"),
+        "find_text": P("string", "exact existing text to replace (optional)"),
+        "replacement": P("string", "replacement text (optional)")}, required=["file_id"])
+async def edit_saved_file(ctx: Ctx, file_id: int, content: str = None, find_text: str = None, replacement: str = None):
+    row = await asyncio.to_thread(ctx.mem.get_temp_file, ctx.user.id, file_id)
+    if not row:
+        return "couldn't find that file in your temporary storage; it may have expired"
+    try:
+        old = bytes(row["data"]).decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return "that saved file isn't UTF-8 text; I can retrieve it, but this editor only edits text"
+    if content is not None:
+        updated = str(content)
+    elif find_text is not None and replacement is not None and str(find_text):
+        if str(find_text) not in old:
+            return "couldn't find that exact text; nothing was changed"
+        updated = old.replace(str(find_text), str(replacement), 1)
+    else:
+        return "provide complete content, or both find_text and replacement"
+    data = updated.encode("utf-8")
+    await asyncio.to_thread(ctx.mem.update_temp_file, ctx.user.id, file_id, data)
+    ctx.files.append((row["filename"], data))
+    return f"updated {row['filename']} in your temporary storage and attached the edited copy"
+
+
+@skill("media", "Delete one of your own saved temporary files.",
+       {"file_id": P("integer", "ID from your saved file list")}, required=["file_id"])
+async def delete_saved_file(ctx: Ctx, file_id: int):
+    deleted = await asyncio.to_thread(ctx.mem.delete_temp_file, ctx.user.id, file_id)
+    return "deleted that saved file" if deleted else "couldn't find that file in your temporary storage"
 
 
 @skill(
