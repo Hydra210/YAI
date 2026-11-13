@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS yuki_temp_files (
  content_type TEXT NOT NULL DEFAULT 'application/octet-stream', data BYTEA NOT NULL,
  created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL
 );
+DELETE FROM yuki_temp_files older USING yuki_temp_files newer
+WHERE older.user_id = newer.user_id AND older.id < newer.id;
+CREATE UNIQUE INDEX IF NOT EXISTS yuki_temp_files_one_per_user ON yuki_temp_files(user_id);
 CREATE INDEX IF NOT EXISTS yuki_temp_files_expiry ON yuki_temp_files(expires_at);
 """
 
