@@ -1491,9 +1491,26 @@ def creator_note(user_id: int, author_name: str, recent, sctx) -> str:
     return ""
 
 
+def asks_about_latest_update(message: str) -> bool:
+    """Recognize direct questions about Yuki's newest release."""
+    q = (message or "").lower().replace("’", "'").strip()
+    phrases = (
+        "what's new", "whats new", "what is new",
+        "latest update", "newest update", "most recent update",
+        "last update", "update log", "changelog", "change log",
+        "release notes", "what changed in the update",
+        "what changed in the latest", "what did you add in the update",
+        "what did yuki add", "what's in the latest update",
+        "whats in the latest update",
+    )
+    return any(phrase in q for phrase in phrases)
+
 async def ask_yuki(scope, channel_key, msg_id, user_id, author_name, text, mentioned_ids, sctx=None, unprompted=False):
     """Returns (reply_text, files). `sctx` carries who/where so skills can do real lookups."""
     text = (text or "")[:1500]
+    # Answer release questions from the actual changelog, not model recall.
+    if not unprompted and asks_about_latest_update(text):
+        return about.format_changelog(1, limit=1800), []
     allow = None
     if sctx is not None:
         sctx.user_text = text
