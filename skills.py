@@ -342,7 +342,7 @@ TRIGGERS = {
         r"file ?size|dimensions?|resolution|memes?|caption|rate|rating|roast|look at|what(?:'s| is) this|"
         r"describe|judge|score this|audio|video|ffmpeg|imagemagick|mp3|wav|m4a|ogg|flac|"
         r"pitch|speed up|slow down|2x|document|text file|create a file|edit a file|make a file|create files?|edit files?|"
-        r"markdown|\.txt|\.md|\.json|\.csv)\b",
+        r"markdown|temporary files?|saved files?|stored files?|retrieve files?|download files?|\.txt|\.md|\.json|\.csv)\b",
         re.I,
     ),
     "util": re.compile(
