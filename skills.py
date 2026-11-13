@@ -1458,7 +1458,9 @@ async def process_audio(ctx: Ctx, speed: float = 1.0, pitch: float = 1.0):
         if dst.stat().st_size > ctx.file_limit:
             return "the processed MP3 is over this server's upload limit"
         output = dst.read_bytes()
-    ctx.files.append((f"{stem}_processed.mp3", output))
+    output_name = f"{stem}_processed.mp3"
+    await asyncio.to_thread(ctx.mem.store_temp_file, ctx.user.id, output_name, output, "audio/mpeg")
+    ctx.files.append((output_name, output))
     return f"processed {att.filename}: speed {speed:g}x, pitch {pitch:g}x. the MP3 is attached"
 
 
@@ -2412,7 +2414,9 @@ async def run_python(ctx: Ctx, code: str):
                 if p.name in skip or not p.is_file() or p.name.startswith(".") or len(attached) >= 3:
                     continue
                 if p.stat().st_size <= ctx.file_limit:
-                    ctx.files.append((p.name, p.read_bytes()))
+                    payload = p.read_bytes()
+                    await asyncio.to_thread(ctx.mem.store_temp_file, ctx.user.id, p.name, payload, "application/octet-stream")
+                    ctx.files.append((p.name, payload))
                     attached.append(p.name)
             result = f"exit code {proc.returncode}\n{out or '(no output)'}"
             if "blocked by yuki's sandbox" in out:
