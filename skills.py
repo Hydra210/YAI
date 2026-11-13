@@ -425,6 +425,7 @@ async def call_skill(ctx: Ctx, name: str, raw_args) -> str:
         inspect.signature(sk.fn).bind(ctx, **args)
     except TypeError as e:
         return f"bad arguments: {e}"
+    await _show_skill_status(ctx, name)
     try:
         result = await asyncio.wait_for(sk.fn(ctx, **args), SKILL_TIMEOUT)
     except asyncio.TimeoutError:
@@ -2115,6 +2116,25 @@ async def _show_searching_status(ctx: Ctx) -> None:
         )
     except Exception:
         log.warning("couldn't switch to searching GIF status", exc_info=True)
+
+MEDIA_ACTIVITY_LABELS = {
+    "create_text_file": "📄 Creating your file…",
+    "edit_text_file": "📝 Editing your file…",
+    "process_audio": "🎧 Processing audio / video…",
+    "imagemagick_edit": "🖼️ Editing your image…",
+}
+
+
+async def _show_skill_status(ctx: Ctx, skill_name: str) -> None:
+    """Replace the initial thinking animation with a label for the active media tool."""
+    label = MEDIA_ACTIVITY_LABELS.get(skill_name)
+    status_message = getattr(ctx, "status_message", None)
+    if not label or status_message is None:
+        return
+    try:
+        await status_message.edit(content=label, attachments=[], embed=None)
+    except Exception:
+        log.warning("couldn't update activity status for %s", skill_name, exc_info=True)
 
 
 @skill(
