@@ -2117,24 +2117,32 @@ async def _show_searching_status(ctx: Ctx) -> None:
     except Exception:
         log.warning("couldn't switch to searching GIF status", exc_info=True)
 
-MEDIA_ACTIVITY_LABELS = {
-    "create_text_file": "📄 Creating your file…",
-    "edit_text_file": "📝 Editing your file…",
-    "process_audio": "🎧 Processing audio / video…",
-    "imagemagick_edit": "🖼️ Editing your image…",
+MEDIA_ACTIVITY_GIFS = {
+    "create_text_file": "creating_file.gif",
+    "edit_text_file": "modifying_file.gif",
+    "process_audio": "analyzing.gif",
+    "imagemagick_edit": "modifying_file.gif",
 }
 
 
 async def _show_skill_status(ctx: Ctx, skill_name: str) -> None:
-    """Replace the initial thinking animation with a label for the active media tool."""
-    label = MEDIA_ACTIVITY_LABELS.get(skill_name)
+    """Swap the thinking animation for the GIF that matches the active media tool."""
+    filename = MEDIA_ACTIVITY_GIFS.get(skill_name)
     status_message = getattr(ctx, "status_message", None)
-    if not label or status_message is None:
+    if not filename or status_message is None:
+        return
+    path = Path(__file__).with_name("Media") / filename
+    if not path.is_file():
+        log.warning("activity GIF is missing at %s", path)
         return
     try:
-        await status_message.edit(content=label, attachments=[], embed=None)
+        await status_message.edit(
+            content=None,
+            attachments=[discord.File(path, filename=filename)],
+            embed=None,
+        )
     except Exception:
-        log.warning("couldn't update activity status for %s", skill_name, exc_info=True)
+        log.warning("couldn't update GIF status for %s", skill_name, exc_info=True)
 
 
 @skill(
