@@ -118,6 +118,14 @@ CREATE TABLE IF NOT EXISTS yuki_personal_memories (
     UNIQUE(user_id, content)
 );
 CREATE INDEX IF NOT EXISTS yuki_personal_memories_user ON yuki_personal_memories(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS yuki_temp_files (
+ id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, filename TEXT NOT NULL,
+ content_type TEXT NOT NULL DEFAULT 'application/octet-stream', data BYTEA NOT NULL,
+ created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS yuki_temp_files_user ON yuki_temp_files(user_id, expires_at DESC);
+CREATE INDEX IF NOT EXISTS yuki_temp_files_expiry ON yuki_temp_files(expires_at);
 """
 
 
@@ -735,6 +743,42 @@ class Memory:
             "DELETE FROM yuki_personal_memories WHERE user_id = %s AND lower(content) = lower(%s)",
             (int(user_id), str(content or "").strip()),
         )
+
+    # ---------- temporary per-user files ----------
+
+    def store_temp_file(self, user_id, filename, data, content_type="application/octet-stream", retention_days=7):
+        now = int(time.time())
+        row = self._one(
+            "INSERT INTO yuki_temp_files(user_id, filename, content_type, data, created_at, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (int(user_id), str(filename)[:255], str(content_type or "application/octet-stream")[:150],
+             psycopg2.Binary(bytes(data)), now, now + max(1, int(retention_days)) * 86400),
+        )
+        return int(row["id"])
+
+    def list_temp_files(self, user_id):
+        return self._all(
+            "SELECT id, filename, content_type, octet_length(data) AS size, created_at, expires_at "
+            "FROM yuki_temp_files WHERE user_id = %s AND expires_at > %s ORDER BY created_at DESC",
+            (int(user_id), int(time.time())),
+        )
+
+    def get_temp_file(self, user_id, file_id):
+        return self._one(
+            "SELECT id, filename, content_type, data, created_at, expires_at FROM yuki_temp_files "
+            "WHERE user_id = %s AND id = %s AND expires_at > %s",
+            (int(user_id), int(file_id), int(time.time())),
+        )
+
+    def update_temp_file(self, user_id, file_id, data):
+        return self._exec(
+            "UPDATE yuki_temp_files SET data = %s WHERE user_id = %s AND id = %s AND expires_at > %s",
+            (psycopg2.Binary(bytes(data)), int(user_id), int(file_id), int(time.time())),
+        )
+
+    def delete_temp_file(self, user_id, file_id):
+        return self._exec("DELETE FROM yuki_temp_files WHERE user_id = %s AND id = %s",
+                          (int(user_id), int(file_id),))
 
     # ---------- housekeeping ----------
 
