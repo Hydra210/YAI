@@ -120,11 +120,10 @@ CREATE TABLE IF NOT EXISTS yuki_personal_memories (
 CREATE INDEX IF NOT EXISTS yuki_personal_memories_user ON yuki_personal_memories(user_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS yuki_temp_files (
- id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, filename TEXT NOT NULL,
+ id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL UNIQUE, filename TEXT NOT NULL,
  content_type TEXT NOT NULL DEFAULT 'application/octet-stream', data BYTEA NOT NULL,
  created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS yuki_temp_files_user ON yuki_temp_files(user_id, expires_at DESC);
 CREATE INDEX IF NOT EXISTS yuki_temp_files_expiry ON yuki_temp_files(expires_at);
 """
 
@@ -744,46 +743,58 @@ class Memory:
             (int(user_id), str(content or "").strip()),
         )
 
-    # ---------- temporary per-user files ----------
+    # ---------- single temporary file per user ----------
 
-    def store_temp_file(self, user_id, filename, data, content_type="application/octet-stream", retention_days=7):
+    def store_temp_file(self, user_id, filename, data, content_type="application/octet-stream"):
         now = int(time.time())
         row = self._one(
             "INSERT INTO yuki_temp_files(user_id, filename, content_type, data, created_at, expires_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET filename = EXCLUDED.filename, "
+            "content_type = EXCLUDED.content_type, data = EXCLUDED.data, "
+            "created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at RETURNING id",
             (int(user_id), str(filename)[:255], str(content_type or "application/octet-stream")[:150],
-             psycopg2.Binary(bytes(data)), now, now + max(1, int(retention_days)) * 86400),
+             psycopg2.Binary(bytes(data)), now, now + 300),
         )
         return int(row["id"])
 
     def list_temp_files(self, user_id):
         return self._all(
             "SELECT id, filename, content_type, octet_length(data) AS size, created_at, expires_at "
-            "FROM yuki_temp_files WHERE user_id = %s AND expires_at > %s ORDER BY created_at DESC",
+            "FROM yuki_temp_files WHERE user_id = %s AND expires_at > %s",
             (int(user_id), int(time.time())),
         )
 
-    def get_temp_file(self, user_id, file_id):
+    def get_temp_file(self, user_id, file_id=None):
+        now = int(time.time())
+        if file_id is None:
+            return self._one(
+                "SELECT id, filename, content_type, data, created_at, expires_at FROM yuki_temp_files "
+                "WHERE user_id = %s AND expires_at > %s", (int(user_id), now))
         return self._one(
             "SELECT id, filename, content_type, data, created_at, expires_at FROM yuki_temp_files "
             "WHERE user_id = %s AND id = %s AND expires_at > %s",
-            (int(user_id), int(file_id), int(time.time())),
-        )
+            (int(user_id), int(file_id), now))
 
     def update_temp_file(self, user_id, file_id, data):
+        now = int(time.time())
         return self._exec(
-            "UPDATE yuki_temp_files SET data = %s WHERE user_id = %s AND id = %s AND expires_at > %s",
-            (psycopg2.Binary(bytes(data)), int(user_id), int(file_id), int(time.time())),
-        )
+            "UPDATE yuki_temp_files SET data = %s, expires_at = %s "
+            "WHERE user_id = %s AND id = %s AND expires_at > %s",
+            (psycopg2.Binary(bytes(data)), now + 300, int(user_id), int(file_id), now))
 
-    def delete_temp_file(self, user_id, file_id):
+    def delete_temp_file(self, user_id, file_id=None):
+        if file_id is None:
+            return self._exec("DELETE FROM yuki_temp_files WHERE user_id = %s", (int(user_id),))
         return self._exec("DELETE FROM yuki_temp_files WHERE user_id = %s AND id = %s",
                           (int(user_id), int(file_id),))
 
     # ---------- housekeeping ----------
 
     def prune(self) -> int:
-        cutoff = int(time.time()) - self.retention_days * 86400
+        now = int(time.time())
+        self._exec("DELETE FROM yuki_temp_files WHERE expires_at <= %s", (now,))
+        cutoff = now - self.retention_days * 86400
         n = self._exec("DELETE FROM messages WHERE ts < %s", (cutoff,))
         self._exec("DELETE FROM mod_log WHERE ts < %s", (cutoff,))
         if n:
