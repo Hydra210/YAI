@@ -1251,20 +1251,20 @@ async def create_text_file(ctx: Ctx, filename: str, content: str):
             return "that JSON isn't valid yet; fix it before I save it"
     file_id = await asyncio.to_thread(ctx.mem.store_temp_file, ctx.user.id, name, data, "text/plain")
     ctx.files.append((name, data))
-    return f"saved {name} to your private temporary files as file ID {file_id}; it expires in 7 days and is attached here too"
+    return f"saved {name} as your one active temporary file (ID {file_id}); it expires after 5 minutes unless I delete it sooner when the task is finished. Saving a new file replaces your previous one."
 
 
-@skill("media", "List your private temporary files saved by Yuki.", {})
+@skill("media", "Show the single temporary file currently saved for you. There can only be one; it expires after 5 minutes.", {})
 async def list_saved_files(ctx: Ctx):
     rows = await asyncio.to_thread(ctx.mem.list_temp_files, ctx.user.id)
     if not rows:
         return "you don't have any saved temporary files right now"
-    return "\n".join(f"ID {r['id']}: {r['filename']} ({r['size']:,} bytes; expires <t:{r['expires_at']}:R>)" for r in rows[:40])
+    return f"ID {rows[0]['id']}: {rows[0]['filename']} ({rows[0]['size']:,} bytes; expires <t:{rows[0]['expires_at']}:R>)"
 
 
-@skill("media", "Retrieve one of your own saved temporary files and attach it to the reply.",
-       {"file_id": P("integer", "ID from your saved file list")}, required=["file_id"])
-async def get_saved_file(ctx: Ctx, file_id: int):
+@skill("media", "Retrieve your one active temporary file and attach it to the reply. It is private to you.",
+       {"file_id": P("integer", "Optional ID of your active file")})
+async def get_saved_file(ctx: Ctx, file_id: int = None):
     row = await asyncio.to_thread(ctx.mem.get_temp_file, ctx.user.id, file_id)
     if not row:
         return "couldn't find that file in your temporary storage; it may have expired"
@@ -1299,10 +1299,10 @@ async def edit_saved_file(ctx: Ctx, file_id: int, content: str = None, find_text
     return f"updated {row['filename']} in your temporary storage and attached the edited copy"
 
 
-@skill("media", "Delete one of your own saved temporary files.",
-       {"file_id": P("integer", "ID from your saved file list")}, required=["file_id"])
-async def delete_saved_file(ctx: Ctx, file_id: int):
-    deleted = await asyncio.to_thread(ctx.mem.delete_temp_file, ctx.user.id, file_id)
+@skill("media", "Mark the current temporary file as finished and delete it immediately when the task is complete. Call this as soon as you are sure the user no longer needs the file.",
+       {})
+async def delete_saved_file(ctx: Ctx):
+    deleted = await asyncio.to_thread(ctx.mem.delete_temp_file, ctx.user.id)
     return "deleted that saved file" if deleted else "couldn't find that file in your temporary storage"
 
 
@@ -1346,8 +1346,9 @@ async def edit_text_file(ctx: Ctx, content: str = None, find_text: str = None, r
             json.loads(updated)
         except ValueError:
             return "the edited JSON isn't valid, so I didn't attach it"
+    file_id = await asyncio.to_thread(ctx.mem.store_temp_file, ctx.user.id, name, data, "text/plain")
     ctx.files.append((name, data))
-    return f"{note} in {name}; the edited copy is attached and the original upload is unchanged"
+    return f"{note} in {name}; saved as your active temporary file (ID {file_id}) and attached. It expires after 5 minutes unless deleted sooner; saving another file replaces it."
 
 
 async def _run_media_process(*args, timeout: int = 30):
