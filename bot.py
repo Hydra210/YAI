@@ -1974,7 +1974,7 @@ async def learner():
         await asyncio.sleep(LEARN_INTERVAL)
         try:
             await learn_once()
-            if time.time() - last_prune > 3600:
+            if time.time() - last_prune > 60:
                 await run(mem.prune)
                 last_prune = time.time()
         except RateLimitError:
