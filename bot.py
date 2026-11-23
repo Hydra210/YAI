@@ -498,13 +498,12 @@ async def start_web_server():
 
 
 _reload_runtime_settings()
-DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
-if not DATABASE_URL:
-    # on purpose there is no sqlite fallback: a temp file on Render would silently wipe Yuki's memory on every deploy
-    raise SystemExit("DATABASE_URL is not set. Yuki's memory lives in Postgres only, set DATABASE_URL (see README).")
-mem = Memory(DATABASE_URL, RETENTION_DAYS, int(os.getenv("DB_POOL_MAX", "5")))
-# per-person personas: Postgres only; startup fails rather than falling back to ephemeral local storage
-persona_store = PersonaStore(DATABASE_URL)
+YUKI_MEMORY_URL = os.getenv("YUKI_MEMORY_URL", "").strip()
+YUKI_MEMORY_API_KEY = os.getenv("YUKI_MEMORY_API_KEY", "").strip()
+if not YUKI_MEMORY_URL or not YUKI_MEMORY_API_KEY:
+    raise SystemExit("YUKI_MEMORY_URL and YUKI_MEMORY_API_KEY are required. Yuki memory is stored in Cloudflare D1.")
+mem = Memory()
+persona_store = PersonaStore()
 # one or more Groq keys: GROQ_API_KEYS="key1,key2,key3" (and/or GROQ_API_KEY). Yuki rotates through them
 # and moves to the next key when one is rate limited.
 GROQ_KEYS = list(dict.fromkeys(
