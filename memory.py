@@ -728,7 +728,7 @@ class Memory:
         return self._exec(
             "UPDATE yuki_temp_files SET data = %s, expires_at = %s "
             "WHERE user_id = %s AND id = %s AND expires_at > %s",
-            (psycopg2.Binary(bytes(data)), now + 300, int(user_id), int(file_id), now))
+            (Binary(bytes(data)), now + 300, int(user_id), int(file_id), now))
 
     def delete_temp_file(self, user_id, file_id=None):
         if file_id is None:
