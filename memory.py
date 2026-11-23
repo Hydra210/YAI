@@ -1,6 +1,6 @@
-"""Persistent memory for Yuki, stored in Postgres (set DATABASE_URL).
+"""Persistent memory for Yuki, stored in Cloudflare D1 through the Yuki Memory Worker.
 
-Everything Yuki remembers lives in Postgres, nothing in a local file, so it survives Render restarts and deploys:
+Everything Yuki remembers lives in Cloudflare D1, not on the Render filesystem, so it survives restarts and deploys:
   - messages  : a log of what people said (full-text searchable for recall)
   - profiles  : learned notes + "how this person talks" + server role tier, per user per server
   - scopes    : learned server vibe / slang, per server
@@ -22,9 +22,7 @@ import threading
 import time
 from typing import Any
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from psycopg2.pool import ThreadedConnectionPool
+from d1db import Binary, RealDictCursor, connect
 
 log = logging.getLogger("yuki.memory")
 
@@ -149,80 +147,33 @@ def _same_json(left, right):
 
 
 class Memory:
-    def __init__(self, database_url: str, retention_days: int = 90, pool_max: int = 5):
-        if not (database_url or "").strip():
-            raise RuntimeError(
-                "DATABASE_URL is not set. Yuki's memory lives in Postgres only (no local fallback), "
-                "so set DATABASE_URL to a Postgres connection string."
-            )
-        self.retention_days = retention_days
-        self.slots = threading.BoundedSemaphore(pool_max)  # the pool raises when full instead of waiting
-        self.pool = self._open_pool(database_url.strip(), pool_max)
-        def initialize(cur):
-            cur.execute(SCHEMA)
-            # Safe migration for databases created before topic-learning was added.
-            cur.execute("ALTER TABLE scopes ADD COLUMN IF NOT EXISTS topics TEXT NOT NULL DEFAULT '[]'")
-        self._do(initialize)
-        self.optouts = {r["user_id"] for r in self._do(self._fetch("SELECT user_id FROM optouts"))}
+    def __init__(self, database_url: str = '', retention_days: int = 0, pool_max: int = 5):
+        # database_url is intentionally ignored; all persistent memory uses the
+        # authenticated Cloudflare D1 Worker configured in the service env.
+        self.retention_days = 0
+        self.optouts = {r['user_id'] for r in self._do(self._fetch('SELECT user_id FROM optouts'))}
         self.fast: dict[int, dict[str, Any]] = {}
-        # Never acquired by fast readers, which may run on the event loop.
         self._fast_write_lock = threading.RLock()
-        for r in self._do(self._fetch("SELECT scope, key, value FROM facts")):
-            self.fast.setdefault(r["scope"], {})[r["key"]] = _json(r["value"], None)
-        log.info(
-            "memory ready on postgres (%d opt-outs, fast memory for %d servers)",
-            len(self.optouts), len(self.fast),
-        )
-
-    # ---------- connection handling ----------
-
-    @staticmethod
-    def _open_pool(url: str, pool_max: int):
-        last = None
-        for attempt in range(1, 5):
-            try:
-                return ThreadedConnectionPool(
-                    1, pool_max, url,
-                    connect_timeout=10,
-                    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
-                )
-            except psycopg2.OperationalError as e:
-                last = e
-                log.warning("postgres not reachable yet (attempt %d/4): %s", attempt, str(e).strip()[:120])
-                time.sleep(2 * attempt)
-        raise RuntimeError(f"couldn't connect to Postgres: {last}")
+        for r in self._do(self._fetch('SELECT scope, key, value FROM facts')):
+            self.fast.setdefault(r['scope'], {})[r['key']] = _json(r['value'], None)
+        log.info('memory ready on Cloudflare D1 (%d opt-outs, fast memory for %d servers)', len(self.optouts), len(self.fast))
 
     def _do(self, work, retries: int = 1):
-        """Run work(cursor) in one transaction. Retries once on a dropped connection (Neon/Supabase idle drops)."""
+        '''Run a database callback against the persistent D1 Worker.'''
+        last = None
         for attempt in range(retries + 1):
-            self.slots.acquire()
-            conn = None
-            bad = False
             try:
-                conn = self.pool.getconn()
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    result = work(cur)
-                conn.commit()
-                return result
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-                bad = True
-                if attempt == retries:
+                with connect() as conn:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                        result = work(cur)
+                    conn.commit()
+                    return result
+            except Exception as exc:
+                last = exc
+                if attempt >= retries:
                     raise
-                log.warning("postgres connection dropped (%s), retrying", type(e).__name__)
-            except Exception:
-                try:
-                    if conn is not None:
-                        conn.rollback()
-                except Exception:
-                    bad = True
-                raise
-            finally:
-                try:
-                    if conn is not None:
-                        self.pool.putconn(conn, close=bad)
-                finally:
-                    self.slots.release()
-
+                log.warning('Cloudflare D1 request failed (%s), retrying', type(exc).__name__)
+        raise RuntimeError('Cloudflare D1 request failed: ' + str(last))
     @staticmethod
     def _fetch(sql, args=()):
         def work(cur):
@@ -367,23 +318,15 @@ class Memory:
         cols = "m.id, m.channel_id, m.user_id, m.author, m.content, m.ts"
         try:
             if not terms:
-                if len(filt) == 2:  # nothing to search for and nothing to filter by
+                if len(filt) == 2:
                     return []
-                return self._all(
-                    f"SELECT {cols} FROM messages m WHERE {where} ORDER BY m.id DESC LIMIT %s", (*args, limit)
-                )
-            tsq = " | ".join(f"{self._stem(t)}:*" for t in terms)
-            return self._all(
-                f"SELECT {cols} FROM messages m "
-                f"WHERE to_tsvector('simple', m.content) @@ to_tsquery('simple', %s) AND {where} "
-                f"ORDER BY ts_rank(to_tsvector('simple', m.content), to_tsquery('simple', %s)) DESC, m.id DESC "
-                f"LIMIT %s",
-                (tsq, *args, tsq, limit),
-            )
-        except psycopg2.Error:
-            log.exception("memory search failed")
+                return self._all(f'SELECT {cols} FROM messages m WHERE {where} ORDER BY m.id DESC LIMIT %s', (*args, limit))
+            where += ' AND (' + ' OR '.join('lower(m.content) LIKE %s' for _ in terms) + ')'
+            args.extend(f'%{term.lower()}%' for term in terms)
+            return self._all(f'SELECT {cols} FROM messages m WHERE {where} ORDER BY m.id DESC LIMIT %s', (*args, limit))
+        except Exception:
+            log.exception('memory search failed')
             return []
-
     def find_user(self, scope, name, limit=5, exact=False) -> list:
         """People Yuki has seen in this scope whose last-known display name or username matches `name`.
         exact=True skips the partial-match fallback (used before pinging anyone)."""
@@ -556,7 +499,8 @@ class Memory:
     def _lock_facts_scope(cur, scope):
         # Also coordinates Memory instances/processes using these writer methods,
         # including missing rows which SELECT FOR UPDATE cannot lock.
-        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"yai-facts-scope:{scope}",))
+        # D1 has atomic statements; the process-local RLock serializes this bot's fact writers.
+        return None
 
     def fast_set(self, scope, key, value):
         """Write to Postgres first, then publish a detached cache value."""
@@ -757,7 +701,7 @@ class Memory:
             "content_type = EXCLUDED.content_type, data = EXCLUDED.data, "
             "created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at RETURNING id",
             (int(user_id), str(filename)[:255], str(content_type or "application/octet-stream")[:150],
-             psycopg2.Binary(bytes(data)), now, now + 300),
+             Binary(bytes(data)), now, now + 300),
         )
         return int(row["id"])
 
@@ -795,11 +739,6 @@ class Memory:
     # ---------- housekeeping ----------
 
     def prune(self) -> int:
+        '''Expire temporary uploads only; saved messages and memories are permanent.'''
         now = int(time.time())
-        self._exec("DELETE FROM yuki_temp_files WHERE expires_at <= %s", (now,))
-        cutoff = now - self.retention_days * 86400
-        n = self._exec("DELETE FROM messages WHERE ts < %s", (cutoff,))
-        self._exec("DELETE FROM mod_log WHERE ts < %s", (cutoff,))
-        if n:
-            log.info("pruned %d old messages", n)
-        return n
+        return self._exec('DELETE FROM yuki_temp_files WHERE expires_at <= %s', (now,))
