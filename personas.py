@@ -43,9 +43,9 @@ class PersonaStore:
     def __init__(self, database_url: str | None = None):
         self.lock = threading.Lock()
         self.cache: dict[int, list[str]] = {}
-        self.url = os.getenv("YUKI_MEMORY_URL", "").strip()
+        self.url = (os.getenv("YUKI_MEMORY_URL") or os.getenv("DATABASE_URL") or "").strip()
         if not self.url:
-            raise RuntimeError("YUKI_MEMORY_URL is required. Persona storage uses Cloudflare D1 only.")
+            raise RuntimeError("Cloudflare D1 credentials or the temporary legacy DATABASE_URL are required for persona storage.")
         self.pg = None
         self._down_until = 0.0
         self.backend = "Cloudflare D1"
