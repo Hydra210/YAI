@@ -52,7 +52,7 @@ def _normalise_sql(sql: str, params):
     params = list(params or ())
     # Translate Postgres array membership to SQLite JSON1.
     # Use an explicit scan so each array parameter is JSON encoded in order.
-    pattern = re.compile(r"=\s*ANY\(\s*%s\s*::\s*(?:bigint|text)\[\]\s*\)", re.I)
+    pattern = re.compile(r"=\s*ANY\(\s*%s(?:\s*::\s*(?:bigint|text)\[\])?\s*\)", re.I)
     if pattern.search(sql):
         converted = []
         p_index = 0
