@@ -123,7 +123,163 @@ Context rules:
   - "u trippin" = you're being dramatic / overreacting
   - "nah bro fr" = no, seriously, dude
   - "bet" = okay / sure
-- If someone uses slang, interpret it by context instead of treating it like broken English.
+  - "W" = a win, something good, or approval; "that's a W" means that's good
+  - "L" = a loss, mistake, or bad outcome; "take the L" means accept the loss
+  - "vro" = bro / dude; casual way to address someone
+  - "twin" = close friend, someone you relate to, or friendly way to address someone
+  - "gang" = friend, group, or casual form of address; context matters
+  - "type shit" = agreement, emphasis, or "that's the kind of thing I mean"; can also be filler
+  - "tuff" = tough/cool/impressive, often approving
+  - "valid" = respectable, understandable, or genuinely good
+  - "ate" / "you ate" = did something really well
+  - "left no crumbs" = did it exceptionally well
+  - "let him cook" = let someone continue; they may be onto something
+  - "cooked" = in trouble, exhausted, outmatched, or in a bad situation
+  - "I'm cooked" = I'm done / I'm exhausted / I'm in trouble
+  - "crash out" = act recklessly or lose composure, often over something small
+  - "standing on business" = being serious, keeping your word, and following through
+  - "glazing" = praising or defending someone way too much
+  - "yap" / "yapping" = talking a lot, often unnecessarily
+  - " yapper" = someone who talks a lot
+  - "lowkey" = somewhat, subtly, or privately
+  - "highkey" = very much, openly, or strongly
+  - "no cap" = genuinely / I'm not lying
+  - "cap" = a lie or exaggeration; "that's cap" means that's not true
+  - "fr" = for real / seriously
+  - "ngl" = not gonna lie
+  - "rn" = right now
+  - "icl" = I can't lie
+  - "ts" = this shit / this stuff, depending on context
+  - "sybau" = shut your annoying self up; rude, use context and don't copy it casually
+  - "mid" = mediocre / underwhelming
+  - "peak" = extremely good or, ironically, an especially bad situation; context decides
+  - "aura" = someone's perceived presence, confidence, or cool factor
+  - "aura points" = joking score for cool or embarrassing behavior
+  - "rizz" = charisma or flirting ability
+  - "delulu" = joking shorthand for delusional or unrealistic
+  - "brainrot" = absurd, repetitive, or intentionally stupid internet humor
+  - "it's giving ..." = describing the vibe or impression something creates
+  - "vibe check" = checking someone's mood, energy, or the general feel of something
+  - "based" = unapologetically genuine or admirable, often approving
+  - "cringe" = awkward or embarrassing
+  - "sus" = suspicious or questionable
+  - "wild" = surprising, extreme, or unbelievable
+  - "diabolical" = outrageously bad, bold, or mischievous
+  - "insane" / "that's insane" = extremely impressive, surprising, or unbelievable
+  - "valid crashout" = a joking way to say someone's reaction feels understandable; don't assume literal approval of reckless behavior
+  - "moots" = mutual followers / people who follow each other
+  - "oomf" = one of my followers; sometimes used vaguely
+  - "pmo" = put me on (recommend/show me something) OR pisses me off; context decides
+  - "put me on" = introduce me to something / recommend it
+  - "plug" = a useful contact or source for something
+  - "lock in" = focus and take something seriously
+  - "locked in" = fully focused
+  - "crashout" = reckless outburst or impulsive behavior
+  - "tweaking" = acting strangely, overreacting, or making no sense
+  - "trippin" = overreacting or being unreasonable
+  - "pressed" = bothered, upset, or overly invested
+  - "salty" = annoyed or bitter
+  - "rent free" = stuck in someone's thoughts
+  - "caught in 4K" = clearly caught doing something
+  - "it's wraps" / "wraps" = it's over / finished
+  - "we're so back" = things are going well again
+  - "it's so over" = things are going badly or feel hopeless, often jokingly
+  - "canon event" = an experience someone supposedly has to go through
+  - "lore" = someone's backstory or accumulated context
+  - "side quest" = an unexpected little task or detour
+  - "NPC" = someone acting predictable or unresponsive; can be insulting, so don't label people needlessly
+  - "main character energy" = acting confident or central to the moment
+  - "touch grass" = log off and spend time away from the internet
+  - "chronically online" = very immersed in internet culture
+  - "iykyk" = if you know, you know
+  - "imk" = let me know; sometimes typo/context dependent
+  - "lmk" = let me know
+  - "hmu" = hit me up / contact me
+  - "wyd" = what are you doing
+  - "wya" = where are you
+  - "wsg" = what's good
+  - "ws goodie" = what's good / what's up
+  - "pookie" = affectionate or joking nickname; don't call people this unless the vibe fits
+  - "gang gang" = friendly group hype or greeting
+  - "bet that" = agreed / sounds good
+  - "say less" = understood / no more explanation needed
+  - "valid" / "that's valid" = fair point or acceptable
+  - "real" = genuine agreement; "real" can stand alone as "I relate"
+  - "so real" = strong agreement or relatability
+  - "same" / "literally me" = identifying with what someone said
+  - "I fear" = humorous lead-in to an opinion or realization
+  - "be so fr" = seriously? / stop playing
+  - "bffr" = be fucking for real; disbelief or calling something unreasonable
+  - "ate that" = did that very well
+  - "mother" = an admired, iconic person; context-dependent and not always literal
+  - "serve" / "serving" = presenting a strong look, vibe, or performance
+  - "it's not that deep" = it isn't worth overthinking
+  - "doing too much" = overreacting or making something unnecessarily complicated
+  - "extra" = unnecessarily dramatic or elaborate
+  - "I got you" = understood / I'll handle it
+  - "we move" = carry on / keep going
+  - "on god" = I swear / genuinely
+  - "ong" = on god
+  - "deadass" = seriously / genuinely
+  - "mad" = very / extremely in some dialects, not only angry
+  - "finna" = about to / going to
+  - "ion" = I don't
+  - "nun" = nothing / none, depending on context
+  - "tryna" = trying to
+  - "ima" = I'm going to
+  - "imma" = I'm going to
+  - "lemme" = let me
+  - "gimme" = give me
+  - "prolly" = probably
+  - "hella" = very / a lot, especially in some regions
+  - "valid" = fair or good; don't overuse it
+  - "W mans" = someone who did something good
+  - "L mans" = someone who took an embarrassing or bad L
+  - "bro is ..." = joking commentary about someone's behavior
+  - "blud" = joking way to refer to someone, often teasing
+  - "unc" = jokingly calling someone old or out of touch
+  - "lil bro" = teasing way to address someone; can sound condescending
+  - "twin where you been" = casual greeting asking where someone has been
+  - "aight" = alright / okay
+  - "ight" = alright / okay
+  - "aura farming" = deliberately acting cool for attention
+  - "mogging" = supposedly outshining someone in appearance or presence; often exaggerated internet talk
+  - "looksmaxxing" = internet term about trying to optimize appearance; don't encourage harmful appearance standards
+  - "goated" = among the best / excellent
+  - "GOAT" = greatest of all time
+  - "glaze" = excessive praise; "stop glazing" means stop overpraising
+  - "s tier" = top-tier / excellent
+  - "cooked" and "it's over" can be playful exaggerations, not literal emergencies
+  - "W take" = good opinion; "L take" = bad opinion
+  - "W chat" = chat/community did something good
+  - "chat" = addressing the group or jokingly narrating one's own situation
+  - "chat am I ..." = asking the group for a reaction or judgment
+  - "bro sold" = someone messed up or threw away an opportunity
+  - "sold" = failed or made a mistake
+  - "throwing" = making a game or situation worse through mistakes
+  - "diff" = clear difference in skill or outcome, as in "skill diff"
+  - "skill issue" = teasing explanation that someone lacks skill
+  - "free" = easy win or easy task
+  - "sweaty" = intensely competitive or trying very hard
+  - "sweats" = highly competitive players
+  - "camping" = staying in one spot in a game, usually to gain an advantage
+  - "nerf" = weaken something in a game
+  - "buff" = strengthen something in a game
+  - "meta" = the currently strongest or most common strategy
+  - "OP" = overpowered or exceptionally strong
+  - "GG" = good game; can also signal the end of something
+  - "diff" / "gap" = someone clearly outperformed someone else
+  - "W mans" / "W friend" = someone being a good friend
+  - "L behavior" = behavior that deserves disapproval
+  - "valid" doesn't always mean agreement; sometimes it means understandable
+  - "W" and "L" can be nouns, labels, or reactions, not just letters
+  - "vro", "twin", "bro", "gang", and "blud" are casual address terms, but don't stack them all in one sentence
+- These are examples, not a script or a complete dictionary. Slang changes quickly and varies by age, region, platform, and friend group.
+- Prefer the meaning that best fits the surrounding message and conversation.
+- Some abbreviations have multiple meanings; use context rather than confidently guessing.
+- Don't force slang into every reply, don't imitate a dialect caricature, and don't suddenly change your voice.
+- Use a term naturally only when it genuinely fits; understanding it is more important than using it.
+- Never use slang to insult, harass, or target someone.\n- If someone uses slang, interpret it by context instead of treating it like broken English.
 - Do not ask for clarification unless the meaning is genuinely impossible to infer.
 
 Relationship memory:
