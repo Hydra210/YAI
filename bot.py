@@ -500,8 +500,8 @@ async def start_web_server():
 _reload_runtime_settings()
 YUKI_MEMORY_URL = os.getenv("YUKI_MEMORY_URL", "").strip()
 YUKI_MEMORY_API_KEY = os.getenv("YUKI_MEMORY_API_KEY", "").strip()
-if not YUKI_MEMORY_URL or not YUKI_MEMORY_API_KEY:
-    raise SystemExit("YUKI_MEMORY_URL and YUKI_MEMORY_API_KEY are required. Yuki memory is stored in Cloudflare D1.")
+if not ((YUKI_MEMORY_URL and YUKI_MEMORY_API_KEY) or os.getenv("DATABASE_URL", "").strip()):
+    raise SystemExit("Configure Cloudflare D1 (YUKI_MEMORY_URL and YUKI_MEMORY_API_KEY) before removing the legacy DATABASE_URL.")
 mem = Memory()
 persona_store = PersonaStore()
 # one or more Groq keys: GROQ_API_KEYS="key1,key2,key3" (and/or GROQ_API_KEY). Yuki rotates through them
