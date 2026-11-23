@@ -43,13 +43,6 @@ def _normalise_sql(sql: str, params):
     sql = re.sub(r"octet_length\\s*\\(\\s*data\\s*\\)", "length(data)", sql, flags=re.I)
     params = list(params or ())
     # Translate Postgres array membership to SQLite JSON1.
-    array_count = 0
-    sql = re.sub(
-        r"=\\s*ANY\\(\\s*%s\\s*::\\s*(?:bigint|text)\\[\\]\\s*\\)",
-        lambda _: (array_count_holder.append(1) or "IN (SELECT value FROM json_each(?))"),
-        sql,
-        flags=re.I,
-    ) if False else sql
     # Use an explicit scan so each array parameter is JSON encoded in order.
     pattern = re.compile(r"=\\s*ANY\\(\\s*%s\\s*::\\s*(?:bigint|text)\\[\\]\\s*\\)", re.I)
     if pattern.search(sql):
