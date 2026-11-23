@@ -2496,6 +2496,9 @@ async def catch_edit_trick(channel_id: int, message_id: int, guild_id: int | Non
 
 
 async def log_message(message: discord.Message):
+    # Excluded channels are excluded from both conversation and long-term learning.
+    if message.guild is not None and not channel_policy.conversation_allowed(mem, message.guild, message.channel):
+        return
     logged = render_content(message)
     if logged:
         tier, top = mod.tier_of(message.author) if message.guild is not None else ("", "")
