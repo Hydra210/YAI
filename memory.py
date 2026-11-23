@@ -264,7 +264,7 @@ class Memory:
     def scope_sample(self, scope, limit=60) -> list:
         """Latest messages from anyone in a scope, oldest first."""
         rows = self._all(
-            "SELECT author, content FROM messages WHERE scope = %s AND is_bot = 0 ORDER BY id DESC LIMIT %s",
+            "SELECT channel_id, author, content FROM messages WHERE scope = %s AND is_bot = 0 ORDER BY id DESC LIMIT %s",
             (scope, limit),
         )
         return list(reversed(rows))
