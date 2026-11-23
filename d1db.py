@@ -129,6 +129,11 @@ class D1Cursor:
                             item[key] = int(value)
                         except ValueError:
                             pass
+                    elif key == "scope" and value in {"0.0", "-0.0"}:
+                        # D1 can return numeric zero from a TEXT scope column as
+                        # "0.0". Normalize it so global facts (scope 0) are
+                        # available through fast_get(0) after a restart.
+                        item[key] = 0
                 if key == "data" and isinstance(value, str):
                     try:
                         item[key] = base64.b64decode(value)
