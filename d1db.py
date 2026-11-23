@@ -101,6 +101,7 @@ class D1Cursor:
             headers={
                 "Authorization": "Bearer " + self.connection.api_key,
                 "Content-Type": "application/json",
+                "User-Agent": "Yuki-Memory/1.0 (+https://exedevelopement.com)",
             },
             method="POST",
         )
