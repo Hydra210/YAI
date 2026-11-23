@@ -643,8 +643,9 @@ class Mod:
             a = m.author
             if getattr(m, "webhook_id", None) or getattr(a, "bot", False) or a.id == getattr(guild, "owner_id", 0):
                 return True
-            p = getattr(a, "guild_permissions", None)
-            return bool(p and (p.administrator or p.manage_guild or p.manage_messages))
+            # Use the same cached role-based staff detection as moderation. Many servers
+            # give staff custom roles without Discord's built-in management permissions.
+            return bool(isinstance(a, discord.Member) and self.is_staff(a))
 
         chunks = [t for t in (msg_text(m) for m in msgs if trusted(m)) if t]
         if ch.topic:
