@@ -14,11 +14,19 @@ import urllib.error
 import urllib.request
 
 
-class RealDictCursor:
-    """Marker matching the psycopg2 cursor mode used by the existing code."""
+try:
+    import psycopg2 as _psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    _psycopg2 = None
+    class RealDictCursor:
+        pass
 
 
-def Binary(value: bytes) -> str:
+
+def Binary(value: bytes):
+    if not os.getenv("YUKI_MEMORY_URL") and _psycopg2 is not None:
+        return _psycopg2.Binary(bytes(value))
     return base64.b64encode(bytes(value)).decode("ascii")
 
 
@@ -174,4 +182,9 @@ class D1Connection:
 
 
 def connect(*_args, **_kwargs):
-    return D1Connection()
+    if os.getenv("YUKI_MEMORY_URL") and os.getenv("YUKI_MEMORY_API_KEY"):
+        return D1Connection()
+    legacy_url = (os.getenv("DATABASE_URL") or "").strip()
+    if legacy_url and _psycopg2 is not None:
+        return _psycopg2.connect(legacy_url, connect_timeout=10)
+    raise RuntimeError("Configure YUKI_MEMORY_URL and YUKI_MEMORY_API_KEY for Cloudflare D1, or DATABASE_URL temporarily for the legacy Postgres fallback.")
