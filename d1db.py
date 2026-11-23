@@ -39,12 +39,12 @@ def _normalise_sql(sql: str, params):
     if "pg_advisory_xact_lock" in raw:
         return None, []
     # SQLite/D1 has no row-level FOR UPDATE; each individual statement is atomic.
-    sql = re.sub(r"\\s+FOR\\s+UPDATE\\b", "", sql, flags=re.I)
-    sql = re.sub(r"octet_length\\s*\\(\\s*data\\s*\\)", "length(data)", sql, flags=re.I)
+    sql = re.sub(r"\s+FOR\s+UPDATE\b", "", sql, flags=re.I)
+    sql = re.sub(r"octet_length\s*\(\s*data\s*\)", "length(data)", sql, flags=re.I)
     params = list(params or ())
     # Translate Postgres array membership to SQLite JSON1.
     # Use an explicit scan so each array parameter is JSON encoded in order.
-    pattern = re.compile(r"=\\s*ANY\\(\\s*%s\\s*::\\s*(?:bigint|text)\\[\\]\\s*\\)", re.I)
+    pattern = re.compile(r"=\s*ANY\(\s*%s\s*::\s*(?:bigint|text)\[\]\s*\)", re.I)
     if pattern.search(sql):
         converted = []
         p_index = 0
@@ -115,7 +115,7 @@ class D1Cursor:
             item = dict(row)
             for key, value in list(item.items()):
                 if key in {"id", "scope", "channel_id", "user_id", "message_id"} and isinstance(value, str):
-                    if re.fullmatch(r"-?\\d+", value):
+                    if re.fullmatch(r"-?\d+", value):
                         try:
                             item[key] = int(value)
                         except ValueError:
