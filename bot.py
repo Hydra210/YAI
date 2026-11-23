@@ -2112,6 +2112,16 @@ async def learn_user(job):
 async def learn_scope(job):
     scope = job["scope"]
     sample = await run(mem.scope_sample, scope, 60)
+    guild = client.get_guild(scope)
+    if guild is not None:
+        visible_sample = []
+        for item in sample:
+            channel_id = item.get("channel_id")
+            channel = guild.get_channel_or_thread(channel_id) if channel_id else None
+            # Unknown/deleted channels are excluded rather than guessed to be public.
+            if channel is not None and channel_policy.conversation_allowed(mem, guild, channel):
+                visible_sample.append(item)
+        sample = visible_sample
     if not sample:
         await run(mem.save_vibe, scope)
         return
