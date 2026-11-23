@@ -6,7 +6,7 @@ user id and only ever injected into the prompt when that same person is the one 
 person's persona never leaks into how he talks to anyone else.
 
 Storage:
-  - Postgres only via DATABASE_URL. Missing database configuration is a startup error;
+  - Cloudflare D1 only via YUKI_MEMORY_URL and YUKI_MEMORY_API_KEY. Missing configuration is a startup error;
     there is deliberately no SQLite or local-file fallback.
 
 All methods are synchronous and thread safe; call them with asyncio.to_thread from the bot. Reads are served
@@ -21,6 +21,8 @@ import os
 import re
 import threading
 import time
+
+from d1db import connect
 
 log = logging.getLogger("yuki.personas")
 
@@ -41,38 +43,35 @@ class PersonaStore:
     def __init__(self, database_url: str | None = None):
         self.lock = threading.Lock()
         self.cache: dict[int, list[str]] = {}
-        self.url = (database_url or "").strip()
+        self.url = os.getenv("YUKI_MEMORY_URL", "").strip()
         if not self.url:
-            raise RuntimeError("DATABASE_URL is required. Persona storage is Postgres-only; no local SQLite fallback.")
+            raise RuntimeError("YUKI_MEMORY_URL is required. Persona storage uses Cloudflare D1 only.")
         self.pg = None
         self._down_until = 0.0
-        self.backend = "postgres"
+        self.backend = "Cloudflare D1"
         if not self._connect():
             raise RuntimeError("Could not initialize persistent Postgres persona storage.")
-        log.info("persona store ready (Postgres only)")
+        log.info("persona store ready (Cloudflare D1)")
 
     # ---------- connection ----------
 
     def _connect(self) -> bool:
         """(Re)open the database. Returns False (and logs) if it can't, instead of crashing the bot."""
         try:
-            if self.url:
-                import psycopg2
-
-                if self.pg is not None:
-                    try:
-                        self.pg.close()
-                    except Exception:
-                        pass
-                self.pg = psycopg2.connect(self.url, connect_timeout=5)
-                self.pg.autocommit = True
-                with self.pg.cursor() as cur:
-                    cur.execute(
-                        "CREATE TABLE IF NOT EXISTS personas ("
-                        " user_id BIGINT PRIMARY KEY,"
-                        " directives TEXT NOT NULL DEFAULT '[]',"
-                        " updated BIGINT NOT NULL DEFAULT 0)"
-                    )
+            if self.pg is not None:
+                try:
+                    self.pg.close()
+                except Exception:
+                    pass
+            self.pg = connect()
+            self.pg.autocommit = True
+            with self.pg.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS personas ("
+                    " user_id TEXT PRIMARY KEY,"
+                    " directives TEXT NOT NULL DEFAULT '[]',"
+                    " updated INTEGER NOT NULL DEFAULT 0)"
+                )
             return True
         except Exception:
             log.exception("persona store couldn't connect to %s", self.backend)
